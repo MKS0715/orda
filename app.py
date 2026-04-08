@@ -3,7 +3,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import time
 
 # ─── 페이지 설정 ───
@@ -356,7 +356,8 @@ def show_record_input(client, info, records):
     with col_round:
         round_num = st.number_input("측정 회차 (자동 계산)", min_value=1, value=next_round)
     with col_date:
-        measure_date = st.date_input("측정일", value=datetime.now())
+        kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
+        measure_date = st.date_input("측정일", value=kst_now)
 
     st.markdown("---")
 
@@ -517,7 +518,8 @@ def show_admin_page(client):
                 with col_r:
                     round_num = st.number_input("측정 회차 (자동 계산)", min_value=1, value=next_round, key="ar_round")
                 with col_d:
-                    measure_date = st.date_input("측정일", value=datetime.now(), key="ar_date")
+                    kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
+                    measure_date = st.date_input("측정일", value=kst_now, key="ar_date")
 
                 st.markdown("**체력 측정 항목**")
                 c1, c2 = st.columns(2)
