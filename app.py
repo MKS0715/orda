@@ -436,7 +436,7 @@ def show_record_input(client, info, records):
                              help="2인 1조 관찰")
     with c2:
         st.markdown("##### ⚡ 순발력")
-        v2 = st.number_input("사이드스텝 (회/40초)", min_value=0, value=0, key="v2")
+        v2 = st.number_input("사이드스텝 (회/20초)", min_value=0, value=0, key="v2")
         st.markdown("##### 🧘 유연성")
         v4 = st.number_input("윗몸앞으로굽히기 (cm)", min_value=-30.0, value=0.0, step=0.5, key="v4")
 
@@ -595,7 +595,7 @@ def show_admin_page(client):
                     v1 = st.number_input("3분 왕복달리기 (회)", min_value=0, value=0, key="ar_v1")
                     v3 = st.number_input("플랭크 (초, 최대 180)", min_value=0, max_value=180, value=0, key="ar_v3")
                 with c2:
-                    v2 = st.number_input("사이드스텝 (회/40초)", min_value=0, value=0, key="ar_v2")
+                    v2 = st.number_input("사이드스텝 (회/20초)", min_value=0, value=0, key="ar_v2")
                     v4 = st.number_input("윗몸앞으로굽히기 (cm)", min_value=-30.0, value=0.0, step=0.5, key="ar_v4")
 
                 submitted = st.form_submit_button("💾 기록 저장", use_container_width=True)
