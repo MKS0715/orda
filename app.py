@@ -13,8 +13,6 @@ st.set_page_config(
     layout="wide"
 )
 
-st.info("✅ 스트림릿 화면 출력 테스트 중입니다!")
-
 # ─── Google Sheets 연결 (오류 자동 보정 및 탐지기 버전) ───
 @st.cache_resource
 def get_google_connection():
@@ -701,3 +699,6 @@ def show_admin_page(client):
         
         **시행일자: 2026년 4월 13일**
         """)
+
+if __name__ == "__main__":
+    main()
