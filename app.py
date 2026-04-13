@@ -15,10 +15,14 @@ st.set_page_config(
 
 st.info("✅ 스트림릿 화면 출력 테스트 중입니다!")
 
-# ─── Google Sheets 연결 ───
+# ─── Google Sheets 연결 (오류 자동 보정 및 탐지기 버전) ───
 @st.cache_resource
 def get_google_connection():
     try:
+        if "gcp_service_account" not in st.secrets:
+            st.error("🚨 Secrets에 [gcp_service_account] 정보가 없습니다. 셋팅을 확인해주세요.")
+            return None
+            
         credentials = Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
             scopes=[
@@ -29,20 +33,38 @@ def get_google_connection():
         client = gspread.authorize(credentials)
         return client
     except Exception as e:
-        st.error(f"Google Sheets 연결 실패: {e}")
+        st.error(f"🚨 구글 서버 연결 실패: {e}")
         return None
 
 def get_or_create_sheet(client, sheet_name):
     try:
-        spreadsheet = client.open(st.secrets["spreadsheet_name"])
-    except gspread.SpreadsheetNotFound:
-        st.error(f"스프레드시트를 찾을 수 없습니다. Google Drive 공유 설정을 확인해주세요.")
+        # 1. 파일 이름 찾기 (Secrets 설정 위치 오류 자동 보정)
+        if "spreadsheet_name" in st.secrets:
+            doc_name = st.secrets["spreadsheet_name"]
+        elif "spreadsheet_name" in st.secrets.get("gcp_service_account", {}):
+            doc_name = st.secrets["gcp_service_account"]["spreadsheet_name"]
+        else:
+            st.error("🚨 Secrets에 'spreadsheet_name'이 설정되지 않았습니다.")
+            return None
+            
+        # 2. 파일 열기 시도
+        try:
+            spreadsheet = client.open(doc_name)
+        except gspread.SpreadsheetNotFound:
+            st.error(f"🚨 구글 드라이브에서 '{doc_name}' 스프레드시트를 찾을 수 없습니다!")
+            st.info("💡 해결법: Secrets에 있는 client_email 주소를 스프레드시트 우측 상단 [공유] 버튼을 눌러 '편집자'로 꼭 추가해주세요.")
+            return None
+            
+        # 3. 내부 시트(탭) 열기
+        try:
+            worksheet = spreadsheet.worksheet(sheet_name)
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
+        return worksheet
+        
+    except Exception as e:
+        st.error(f"🚨 데이터베이스 접근 중 알 수 없는 에러 발생: {e}")
         return None
-    try:
-        worksheet = spreadsheet.worksheet(sheet_name)
-    except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
-    return worksheet
 
 # ─── 초기 데이터 생성 ───
 def init_student_list(client):
