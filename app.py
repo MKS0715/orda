@@ -13,6 +13,8 @@ st.set_page_config(
     layout="wide"
 )
 
+st.info("✅ 스트림릿 화면 출력 테스트 중입니다!")
+
 # ─── Google Sheets 연결 ───
 @st.cache_resource
 def get_google_connection():
