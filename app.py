@@ -466,6 +466,7 @@ def show_admin_page(client):
 
     tab1, tab2, tab3, tab4 = st.tabs(["🔄 초기 세팅", "📝 기록 입력", "👥 학생 관리", "📊 전체 기록"])
 
+    # ─── 탭1: 초기 세팅 ───
     with tab1:
         st.markdown("#### 🔄 초기 데이터 생성")
         st.warning("⚠️ 처음 한 번만 실행하세요! 기존 데이터가 있으면 건너뜁니다.")
@@ -481,13 +482,13 @@ def show_admin_page(client):
                 else:
                     st.error("❌ 시트 생성에 실패했습니다.")
 
+    # ─── 탭2: 기록 입력 (자동 회차 계산 및 KST 적용) ───
     with tab2:
         st.markdown("#### 📝 체력 측정 기록 입력 (관리자)")
         students = get_student_list(client)
         if students.empty:
             st.warning("먼저 초기 세팅을 진행해주세요.")
         else:
-            # 실시간 업데이트를 위해 폼 밖에서 학생 선택
             col_sel1, col_sel2 = st.columns(2)
             with col_sel1:
                 grade = st.selectbox("학년", sorted(students["학년"].astype(str).unique()),
@@ -497,11 +498,10 @@ def show_admin_page(client):
                 student_options = [f"{row['번호']}번 - {row['이름']}" for _, row in filtered.iterrows()]
                 selected = st.selectbox("학생 선택", student_options, key="ar_student_out")
 
-            # 선택된 학생의 기존 기록 조회하여 다음 회차 자동 계산
             if selected:
                 s_num = selected.split("번")[0]
-                cls = str(filtered.iloc[0]["반"])
-                admin_records = get_student_records(client, grade, cls, s_num)
+                cls_val = str(filtered[filtered["번호"].astype(str) == s_num].iloc[0]["반"])
+                admin_records = get_student_records(client, grade, cls_val, s_num)
 
                 if admin_records.empty:
                     next_round = 1
@@ -518,7 +518,11 @@ def show_admin_page(client):
                 with col_r:
                     round_num = st.number_input("측정 회차 (자동 계산)", min_value=1, value=next_round, key="ar_round")
                 with col_d:
-                    kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
+                    try:
+                        from datetime import timedelta, timezone
+                        kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
+                    except ImportError:
+                        kst_now = datetime.now()
                     measure_date = st.date_input("측정일", value=kst_now, key="ar_date")
 
                 st.markdown("**체력 측정 항목**")
@@ -533,7 +537,7 @@ def show_admin_page(client):
                 submitted = st.form_submit_button("💾 기록 저장", use_container_width=True)
                 if submitted:
                     s_name = selected.split(" - ")[1]
-                    record = [grade, cls, s_num, s_name, round_num,
+                    record = [grade, cls_val, s_num, s_name, round_num,
                               measure_date.strftime("%Y-%m-%d"), v1, v2, v3, v4]
                     if add_record(client, record):
                         st.success(f"✅ {s_name} 학생의 {round_num}회차 기록이 저장되었습니다!")
@@ -542,6 +546,7 @@ def show_admin_page(client):
                     else:
                         st.error("❌ 저장에 실패했습니다.")
 
+    # ─── 탭3: 학생 명단 관리 ───
     with tab3:
         st.markdown("#### 👥 학생 명단 관리")
         students = get_student_list(client)
@@ -617,6 +622,7 @@ def show_admin_page(client):
                             st.rerun()
                             break
 
+    # ─── 탭4: 전체 기록 확인 ───
     with tab4:
         st.markdown("#### 📊 전체 기록 확인")
         all_records = get_all_records(client)
@@ -630,5 +636,44 @@ def show_admin_page(client):
         else:
             st.info("아직 입력된 기록이 없습니다.")
 
-if __name__ == "__main__":
-    main()
+    # ─── 하단: 개인정보 처리방침 (제공해주신 텍스트 적용) ───
+    st.markdown("---")
+    with st.expander("📄 개인정보 처리방침"):
+        st.markdown("""
+        **[개인정보 처리방침]**
+        
+        「오르다」 프로젝트 앱(이하 '본 앱')은 남산초등학교 학생들의 자기주도적 체력 관리 및 디지털교육 선도학교 연구 목적으로 운영되며, 사용자의 개인정보를 중요하게 생각하고 안전하게 보호하기 위해 최선을 다하고 있습니다.
+        
+        **1. 수집하는 개인정보 항목**
+        본 앱은 서비스 제공을 위해 아래와 같은 최소한의 개인정보를 수집합니다.
+        * **필수 항목**: 학년, 반, 번호, 성명, 비밀번호(본 앱 전용)
+        * **건강/체력 데이터**: 3분 왕복달리기(회), 사이드스텝(회), 플랭크(초), 윗몸앞으로굽히기(cm) 측정 기록 및 목표 설정 데이터
+        * **자동 수집 항목**: 서비스 이용 기록, 접속 일시 등
+        
+        **2. 개인정보의 수집 및 이용 목적**
+        수집된 개인정보는 다음의 목적을 위해서만 이용됩니다.
+        * **학생 체력 관리**: 개인별 체력 데이터 시각화, 성장 추이 분석 및 AI 맞춤형 피드백 제공
+        * **통계 및 연구**: 반별/학년별 통계 산출 및 디지털교육 선도학교 운영 결과 분석 (이 경우, 개인을 식별할 수 없는 비식별화 데이터로 변환하여 활용합니다.)
+        * **서비스 운영**: 본인 인증, 기록 조회 권한 확인 및 관리
+        
+        **3. 개인정보의 보유 및 이용 기간**
+        * 본 앱에서 수집된 개인정보 및 체력 데이터는 해당 학년도 프로젝트 종료 시까지 보유하며, 목적 달성 후에는 복구할 수 없는 방법으로 지체 없이 영구 파기합니다.
+        * 단, 연구 보고서 작성을 위해 활용되는 데이터는 개인을 식별할 수 없도록 익명화 처리하여 보관될 수 있습니다.
+        
+        **4. 개인정보의 제3자 제공**
+        본 앱은 수집된 개인정보를 원칙적으로 외부에 제공하지 않습니다. 다만, 법령의 규정에 의거하거나 수사 목적으로 법령에 정해진 절차와 방법에 따라 요구받은 경우는 예외로 합니다.
+        
+        **5. 사용자의 권리 및 행사 방법**
+        * 학생 및 학부모님은 언제든지 등록되어 있는 자신의 개인정보를 조회하거나 수정할 수 있으며, 관리자(담당 교사)에게 정보 삭제 및 처리 정지를 요청할 수 있습니다.
+        * 열람, 수정, 삭제 요청은 담당 교사에게 직접 문의해주시기 바랍니다.
+        
+        **6. 개인정보 보호를 위한 안전성 확보 조치**
+        * 데이터는 보안이 적용된 Google Cloud(Google Sheets) 환경에 저장되며, 접근 권한은 담당 교사에게만 엄격히 제한됩니다.
+        * 학생 본인의 계정으로 로그인한 경우에만 자신의 기록을 열람할 수 있도록 시스템이 구성되어 있습니다.
+        
+        **7. 개인정보 보호 책임자**
+        * 소속/성명: 남산초등학교 체육전담교사
+        * 연락처: 053-852-5006
+        
+        **시행일자: 2026년 4월 13일**
+        """)
