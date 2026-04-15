@@ -96,8 +96,9 @@ def init_records_sheet(client):
     return True
 
 # ─── 데이터 조회 ───
-def get_student_list(client):
-    ws = get_or_create_sheet(client, "학생명단")
+@st.cache_data(ttl=60)
+def get_student_list(_client):
+    ws = get_or_create_sheet(_client, "학생명단")
     if ws is None:
         return pd.DataFrame()
     data = ws.get_all_records()
@@ -105,8 +106,9 @@ def get_student_list(client):
         return pd.DataFrame()
     return pd.DataFrame(data)
 
-def get_student_records(client, grade, cls, num):
-    ws = get_or_create_sheet(client, "체력기록")
+@st.cache_data(ttl=60)
+def get_student_records(_client, grade, cls, num):
+    ws = get_or_create_sheet(_client, "체력기록")
     if ws is None:
         return pd.DataFrame()
     data = ws.get_all_records()
@@ -118,8 +120,9 @@ def get_student_records(client, grade, cls, num):
             (df["번호"].astype(str) == str(num))]
     return df
 
-def get_all_records(client):
-    ws = get_or_create_sheet(client, "체력기록")
+@st.cache_data(ttl=60)
+def get_all_records(_client):
+    ws = get_or_create_sheet(_client, "체력기록")
     if ws is None:
         return pd.DataFrame()
     data = ws.get_all_records()
@@ -133,6 +136,7 @@ def add_record(client, record):
     if ws is None:
         return False
     ws.append_row(record)
+    st.cache_data.clear()  # 🌟 핵심 추가: 저장 시 기존 기억 삭제
     return True
 
 def add_student(client, student_data):
@@ -140,6 +144,7 @@ def add_student(client, student_data):
     if ws is None:
         return False
     ws.append_row(student_data)
+    st.cache_data.clear()  # 🌟 핵심 추가
     return True
 
 def delete_student(client, grade, cls, num):
@@ -152,6 +157,7 @@ def delete_student(client, grade, cls, num):
             continue
         if str(row[0]) == str(grade) and str(row[1]) == str(cls) and str(row[2]) == str(num):
             ws.delete_rows(i + 1)
+            st.cache_data.clear()  # 🌟 핵심 추가
             return True
     return False
 
