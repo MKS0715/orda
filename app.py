@@ -34,9 +34,10 @@ def get_google_connection():
         st.error(f"🚨 구글 서버 연결 실패: {e}")
         return None
 
-def get_or_create_sheet(client, sheet_name):
+# ─── 시트 파일 찾기 및 열기 (최적화 버전 🌟) ───
+@st.cache_resource(ttl=3600)  # 시트 객체를 1시간 동안 메모리에 유지!
+def get_or_create_sheet(_client, sheet_name):
     try:
-        # 1. 파일 이름 찾기 (Secrets 설정 위치 오류 자동 보정)
         if "spreadsheet_name" in st.secrets:
             doc_name = st.secrets["spreadsheet_name"]
         elif "spreadsheet_name" in st.secrets.get("gcp_service_account", {}):
@@ -44,6 +45,23 @@ def get_or_create_sheet(client, sheet_name):
         else:
             st.error("🚨 Secrets에 'spreadsheet_name'이 설정되지 않았습니다.")
             return None
+            
+        try:
+            # 여기서 발생하는 엄청난 Read 트래픽을 캐시가 방어해 줍니다.
+            spreadsheet = _client.open(doc_name)
+        except gspread.SpreadsheetNotFound:
+            st.error(f"🚨 구글 드라이브에서 '{doc_name}' 스프레드시트를 찾을 수 없습니다!")
+            return None
+            
+        try:
+            worksheet = spreadsheet.worksheet(sheet_name)
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
+        return worksheet
+        
+    except Exception as e:
+        st.error(f"🚨 데이터베이스 접근 중 알 수 없는 에러 발생: {e}")
+        return None
             
         # 2. 파일 열기 시도
         try:
@@ -130,13 +148,15 @@ def get_all_records(_client):
         return pd.DataFrame()
     return pd.DataFrame(data)
 
-# ─── 데이터 입력/수정/삭제 ───
+# ─── 데이터 입력/수정/삭제 (스마트 캐시 초기화 버전 🌟) ───
 def add_record(client, record):
     ws = get_or_create_sheet(client, "체력기록")
     if ws is None:
         return False
     ws.append_row(record)
-    st.cache_data.clear()  # 🌟 핵심 추가: 저장 시 기존 기억 삭제
+    # 전체 삭제 대신 '체력 기록' 캐시만 핀셋으로 삭제! (학생 명단은 유지됨)
+    get_student_records.clear()
+    get_all_records.clear()
     return True
 
 def add_student(client, student_data):
@@ -144,7 +164,7 @@ def add_student(client, student_data):
     if ws is None:
         return False
     ws.append_row(student_data)
-    st.cache_data.clear()  # 🌟 핵심 추가
+    get_student_list.clear()  # 학생이 추가될 때만 명단 캐시 삭제
     return True
 
 def delete_student(client, grade, cls, num):
@@ -157,7 +177,7 @@ def delete_student(client, grade, cls, num):
             continue
         if str(row[0]) == str(grade) and str(row[1]) == str(cls) and str(row[2]) == str(num):
             ws.delete_rows(i + 1)
-            st.cache_data.clear()  # 🌟 핵심 추가
+            get_student_list.clear()  # 학생이 삭제될 때만 명단 캐시 삭제
             return True
     return False
 
