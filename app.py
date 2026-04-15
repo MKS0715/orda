@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from google.oauth2.service_account import Credentials
+import google.generativeai as genai
 
 # ─────────────────────────────────────────────────────
 # 페이지 설정
@@ -490,56 +491,43 @@ def update_student(client, grade, cls, num, new_name="", new_password="", sync_r
 # ─────────────────────────────────────────────────────
 # 분석/시각화
 # ─────────────────────────────────────────────────────
-def generate_item_feedback(records_df, item_name):
-    if records_df.empty or len(records_df) < 4 or item_name not in records_df.columns:
-        return None
-
-    vals = pd.to_numeric(records_df[item_name], errors="coerce").dropna()
-    if len(vals) < 4:
-        return None
-
-    first = vals.iloc[0]
-    last = vals.iloc[-1]
-    diff = last - first
-    item_short = item_name.split("(")[0]
-
-    if "플랭크" in item_name:
-        if diff > 10:
-            return f"🔥 {item_short} 기록이 {diff:.0f}초 향상! 코어 근력이 확실히 좋아지고 있어요! 💪"
-        if diff > 0:
-            return f"📈 {item_short} 기록이 조금씩 늘고 있어요. 꾸준히 하면 더 좋아질 거예요! 👍"
-        if diff == 0:
-            return f"📊 {item_short} 기록이 유지되고 있어요. 조금만 더 도전해볼까요? 😊"
-        return f"💡 {item_short} 기록이 살짝 줄었어요. 매일 30초씩 연습하면 금방 회복돼요! 💪"
-
-    if "왕복달리기" in item_name:
-        if diff > 5:
-            return f"🔥 {item_short} {diff:.0f}회 증가! 심폐지구력이 많이 좋아졌어요! 🏃"
-        if diff > 0:
-            return f"📈 {item_short} 기록이 조금씩 늘고 있어요. 꾸준한 달리기가 효과를 보고 있어요! 👍"
-        if diff == 0:
-            return f"📊 {item_short} 기록이 유지 중이에요. 매일 조금씩 더 뛰어볼까요? 😊"
-        return f"💡 {item_short} 기록이 약간 줄었지만 괜찮아요! 가볍게 달리기 연습해보세요! 🏃"
-
-    if "사이드스텝" in item_name:
-        if diff > 3:
-            return f"🔥 {item_short} {diff:.0f}회 증가! 순발력이 눈에 띄게 좋아졌어요! ⚡"
-        if diff > 0:
-            return f"📈 {item_short} 기록이 향상되고 있어요! 민첩성이 좋아지고 있는 증거예요! 👍"
-        if diff == 0:
-            return f"📊 {item_short} 기록이 안정적이에요. 줄넘기로 스텝 연습해볼까요? 😊"
-        return f"💡 {item_short} 기록이 조금 줄었어요. 좌우 스텝 연습을 하면 금방 늘 거예요! ⚡"
-
-    if "굽히기" in item_name:
-        if diff > 3:
-            return f"🔥 {item_short} {diff:.1f}cm 향상! 유연성이 정말 좋아졌어요! 🧘"
-        if diff > 0:
-            return f"📈 {item_short} 기록이 조금씩 늘고 있어요! 스트레칭 효과가 나타나고 있어요! 👍"
-        if diff == 0:
-            return f"📊 {item_short} 기록이 유지 중이에요. 매일 스트레칭 습관을 들여볼까요? 😊"
-        return f"💡 {item_short} 기록이 살짝 줄었어요. 매일 10초씩 스트레칭하면 금방 좋아져요! 🧘"
-
-    return None
+# 👇 기존 generate_item_feedback 대신 이 코드를 넣습니다.
+@st.cache_data(show_spinner=False, ttl=3600)
+def generate_gemini_feedback(records_df, item_name, student_name):
+    if "GEMINI_API_KEY" not in st.secrets:
+        return "⚠️ Secrets에 GEMINI_API_KEY가 없습니다. 관리자에게 문의하세요."
+        
+    import google.generativeai as genai
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    model = genai.GenerativeModel('gemini-1.5-flash') 
+    
+    df = records_df[['측정회차', item_name]].dropna().sort_values('측정회차')
+    if len(df) < 2:
+        return "💬 2회 이상 기록이 누적되면 AI 체육 선생님의 맞춤 분석이 제공됩니다!"
+        
+    records_text = "\n".join([f"- {row['측정회차']}회차: {row[item_name]}" for _, row in df.iterrows()])
+    
+    prompt = f"""
+    당신은 초등학생들을 사랑으로 가르치는 다정하고 열정적인 체육 선생님입니다.
+    학생의 이름은 '{student_name}'이며, '{item_name}' 종목의 체력 측정 기록은 다음과 같습니다.
+    
+    [측정 기록]
+    {records_text}
+    
+    위 데이터를 바탕으로 학생에게 직접 말하듯이 친절하고 격려하는 말투(해요체/해요)로 피드백을 작성해주세요. 
+    초등학생 눈높이에 맞게 이모지(🏃, 💪, ⚡ 등)를 듬뿍 사용해주세요. 
+    다음 3가지 내용이 반드시 순서대로 들어가야 합니다:
+    1. 기록 변화 분석: 이전 회차와 비교해서 얼마나 발전했는지, 혹은 꾸준히 잘하고 있는지 구체적인 수치로 칭찬해주세요. (기록이 떨어졌다면 위로와 격려를 해주세요.)
+    2. 따뜻한 격려: 학생의 노력에 대한 칭찬과 긍정적인 동기부여.
+    3. 맞춤형 운동 추천: 이 종목({item_name})의 기록을 더 높이기 위해 집이나 학교에서 안전하게 할 수 있는 구체적이고 쉬운 맨몸 운동 1가지를 추천해주세요.
+    
+    너무 길지 않게 3~4문장 내외로 굵고 짧게 작성해주세요.
+    """
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"⚠️ AI 분석 중 일시적인 오류가 발생했습니다. 나중에 다시 시도해주세요. ({e})"
 
 
 def create_growth_chart(records_df, item_name):
@@ -860,16 +848,16 @@ def show_growth_analysis(records):
             else:
                 st.info(f"{item.split('(')[0]} 기록이 없습니다.")
 
-            feedback = generate_item_feedback(records, item)
-            if feedback:
-                st.info(f"🤖 {feedback}")
+            short_name = item.split('(')[0]
+            with st.spinner(f"🤖 AI가 {short_name} 기록을 분석하고 있어요..."):
+                feedback = generate_gemini_feedback(records, item, info['name'])
+            
+            if feedback.startswith("💬") or feedback.startswith("⚠️"):
+                st.info(feedback)
             else:
-                rec_count = len(pd.to_numeric(records.get(item, pd.Series(dtype="object")), errors="coerce").dropna())
-                if rec_count < 4:
-                    st.caption(f"💬 4회 이상 기록 시 피드백이 나타나요! (현재 {rec_count}회)")
-
+                st.success(f"**🤖 AI 체육 선생님의 맞춤 피드백**\n\n{feedback}")
             st.markdown("")
-
+            
     st.markdown("---")
     st.markdown("#### 📊 4종목 누적 기록 요약")
 
