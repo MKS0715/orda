@@ -122,7 +122,19 @@ def get_student_list(_client):
     data = ws.get_all_records()
     if not data:
         return pd.DataFrame()
-    return pd.DataFrame(data)
+    
+    df = pd.DataFrame(data)
+    
+    # 🌟 핵심 수정 부분: 비밀번호를 문자열로 바꾸고 4자리로 맞춤 (앞에 0 채우기)
+    if "비밀번호" in df.columns:
+        df["비밀번호"] = df["비밀번호"].astype(str).str.zfill(4)
+    
+    # 학년, 반, 번호도 숫자로 인식되어 0이 사라질 수 있으므로 함께 처리하면 좋습니다.
+    for col in ["학년", "반", "번호"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str)
+            
+    return df
 
 @st.cache_data(ttl=60)
 def get_student_records(_client, grade, cls, num):
