@@ -627,20 +627,31 @@ def show_admin_page(client):
                         kst_now = datetime.now()
                     measure_date = st.date_input("측정일", value=kst_now, key="ar_date")
 
-                st.markdown("**체력 측정 항목**")
+# 🌟 수정됨: 안내 문구 추가
+                st.markdown("**체력 측정 항목 (측정하지 않은 종목은 비워두세요)**")
                 c1, c2 = st.columns(2)
+                
+                # 🌟 수정됨: value=0을 value=None으로 변경하고 placeholder(안내말) 추가
                 with c1:
-                    v1 = st.number_input("3분 왕복달리기 (회)", min_value=0, value=0, key="ar_v1")
-                    v3 = st.number_input("플랭크 (초, 최대 180)", min_value=0, max_value=180, value=0, key="ar_v3")
+                    v1 = st.number_input("3분 왕복달리기 (회)", min_value=0, value=None, placeholder="미측정", key="ar_v1")
+                    v3 = st.number_input("플랭크 (초, 최대 180)", min_value=0, max_value=180, value=None, placeholder="미측정", key="ar_v3")
                 with c2:
-                    v2 = st.number_input("사이드스텝 (회/20초)", min_value=0, value=0, key="ar_v2")
-                    v4 = st.number_input("윗몸앞으로굽히기 (cm)", min_value=-30.0, value=0.0, step=0.5, key="ar_v4")
+                    v2 = st.number_input("사이드스텝 (회/20초)", min_value=0, value=None, placeholder="미측정", key="ar_v2")
+                    v4 = st.number_input("윗몸앞으로굽히기 (cm)", min_value=-30.0, value=None, step=0.5, placeholder="미측정", key="ar_v4")
 
                 submitted = st.form_submit_button("💾 기록 저장", use_container_width=True)
                 if submitted:
                     s_name = selected.split(" - ")[1]
+                    
+                    # 🌟 수정됨: 입력하지 않은 값(None)을 구글 시트용 빈칸("")으로 자동 변환
+                    val_1 = "" if v1 is None else v1
+                    val_2 = "" if v2 is None else v2
+                    val_3 = "" if v3 is None else v3
+                    val_4 = "" if v4 is None else v4
+                    
                     record = [grade, cls_val, s_num, s_name, round_num,
-                              measure_date.strftime("%Y-%m-%d"), v1, v2, v3, v4]
+                              measure_date.strftime("%Y-%m-%d"), val_1, val_2, val_3, val_4]
+                              
                     if add_record(client, record):
                         st.success(f"✅ {s_name} 학생의 {round_num}회차 기록이 저장되었습니다!")
                         time.sleep(1)
