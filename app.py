@@ -718,7 +718,7 @@ def show_student_dashboard(client):
             st.rerun()
 
     screen = st.radio(
-        "",
+        "메뉴 선택",
         ["📝 기록 입력", "📊 성장 분석"],
         horizontal=True,
         label_visibility="collapsed",
