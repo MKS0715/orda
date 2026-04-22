@@ -125,11 +125,16 @@ def normalize_student_df(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     out = df.copy()
-    for col in ["학년", "반", "번호", "이름", "비밀번호"]:
+    # 1. 비밀번호를 제외한 나머지 열 먼저 문자열 처리
+    for col in ["학년", "반", "번호", "이름"]:
         if col in out.columns:
             out[col] = out[col].astype(str).fillna("")
-    return sort_students_df(out)
+            
+    # 2. 👇 비밀번호 열에 0이 사라지는 문제 해결 (zfill 4자리 채우기)
+    if "비밀번호" in out.columns:
+        out["비밀번호"] = out["비밀번호"].astype(str).fillna("").str.zfill(4)
 
+    return sort_students_df(out)
 
 def normalize_records_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
