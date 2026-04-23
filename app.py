@@ -25,6 +25,17 @@ st.set_page_config(
 SHEET_STUDENTS = "학생명단"
 SHEET_RECORDS = "체력기록"
 SHEET_GROUPS = "모둠"
+SHEET_CHALLENGE = "챌린지기록"
+CHALLENGE_START_DATE = "2026-05-06"  # 챌린지 시작일 (2회차 측정일)
+CHALLENGE_TOTAL_WEEKS = 9  # 2회차(1주차)부터 10회차(9주차)까지
+CHALLENGE_GOAL = 100  # 주당 목표 점수
+
+CHALLENGE_ITEMS = [
+    ("심폐지구력", "🏃", "#FF6B6B"),
+    ("근지구력", "💪", "#45B7D1"),
+    ("순발력", "⚡", "#4ECDC4"),
+    ("유연성", "🧘", "#96CEB4"),
+]
 KST = timezone(timedelta(hours=9))
 
 ITEMS = [
@@ -87,12 +98,32 @@ PRIVACY_POLICY_MD = """
 def now_kst() -> datetime:
     return datetime.now(timezone.utc).astimezone(KST)
 
+def get_current_week() -> Optional[int]:
+    """오늘이 챌린지 몇 주차인지 반환. 시작 전이면 None, 10주 넘으면 10 유지"""
+    today = now_kst().date()
+    start = datetime.strptime(CHALLENGE_START_DATE, "%Y-%m-%d").date()
+    
+    if today < start:
+        return None  # 아직 시작 전
+    
+    days_passed = (today - start).days
+    week = days_passed // 7 + 1  # 시작일 당일은 1주차
+    
+    return min(week, CHALLENGE_TOTAL_WEEKS)
 
+
+def get_available_weeks() -> List[int]:
+    """현재 시점까지 열린 주차 목록 (학생 입력/조회용)"""
+    current = get_current_week()
+    if current is None:
+        return []
+    return list(range(1, current + 1))
 def clear_data_caches():
     get_student_list.clear()
     get_student_records.clear()
     get_all_records.clear()
     get_group_data.clear()
+    get_challenge_records.clear()
 
 
 def hash_password(raw_password: str) -> str:
@@ -393,6 +424,22 @@ def init_records_sheet(client) -> bool:
 
     return True
 
+def init_challenge_sheet(client) -> bool:
+    ws = get_worksheet(client, SHEET_CHALLENGE)
+    if ws is None:
+        return False
+
+    existing = gs_retry(lambda: ws.get_all_values())
+    if len(existing) <= 1:
+        headers = [
+            "학년", "반", "번호", "이름", "주차", "입력일",
+            "심폐지구력", "근지구력", "순발력", "유연성", "합계"
+        ]
+        gs_retry(lambda: ws.clear())
+        gs_retry(lambda: ws.update(range_name="A1", values=[headers]))
+        clear_data_caches()
+
+    return True
 
 # ─────────────────────────────────────────────────────
 # 데이터 조회
@@ -508,7 +555,65 @@ def get_group_avg_records(all_records_df, group_df, grade, cls, group_num):
             result[item] = round(sum(vals) / len(vals), 1)
     return pd.Series(result)
 
+@st.cache_data(ttl=60)
+def get_challenge_records(_client):
+    ws = get_worksheet(_client, SHEET_CHALLENGE, create_if_missing=False)
+    if ws is None:
+        return pd.DataFrame()
+    data = gs_retry(lambda: ws.get_all_records())
+    if not data:
+        return pd.DataFrame()
+    df = pd.DataFrame(data)
+    for col in ["학년", "반", "번호", "이름", "주차", "입력일"]:
+        if col in df.columns:
+            df[col] = df[col].apply(clean_cell)
+    return df
 
+
+def get_my_challenge_record(challenge_df, grade, cls, num, week):
+    """내 특정 주차 챌린지 기록 반환. 없으면 None"""
+    if challenge_df.empty:
+        return None
+    match = challenge_df[
+        (challenge_df["학년"].astype(str) == str(grade)) &
+        (challenge_df["반"].astype(str) == str(cls)) &
+        (challenge_df["번호"].astype(str) == str(num)) &
+        (challenge_df["주차"].astype(str) == str(week))
+    ]
+    if match.empty:
+        return None
+    return match.iloc[0].to_dict()
+
+
+def get_group_challenge_total(challenge_df, group_df, grade, cls, group_num, week):
+    """모둠원 전체의 특정 주차 합계 + 입력 현황 반환"""
+    members = get_group_members(group_df, grade, cls, group_num)
+    if not members:
+        return {"total": 0, "members_status": []}
+
+    members_status = []
+    total = 0
+
+    for name in members:
+        match = pd.DataFrame()
+        if not challenge_df.empty:
+            match = challenge_df[
+                (challenge_df["학년"].astype(str) == str(grade)) &
+                (challenge_df["반"].astype(str) == str(cls)) &
+                (challenge_df["이름"] == name) &
+                (challenge_df["주차"].astype(str) == str(week))
+            ]
+
+        if match.empty:
+            members_status.append({"name": name, "sum": 0, "entered": False})
+        else:
+            my_sum = pd.to_numeric(match.iloc[0].get("합계", 0), errors="coerce")
+            my_sum = int(my_sum) if not pd.isna(my_sum) else 0
+            members_status.append({"name": name, "sum": my_sum, "entered": True})
+            total += my_sum
+
+    return {"total": total, "members_status": members_status}
+    
 # ─────────────────────────────────────────────────────
 # 데이터 입력/수정/삭제
 # ─────────────────────────────────────────────────────
@@ -533,6 +638,47 @@ def add_record(client, record):
     clear_data_caches()
     return True, f"{round_num}회차 기록이 저장되었습니다."
 
+def save_challenge_record(client, grade, cls, num, name, week, values):
+    """챌린지 기록 저장 또는 업데이트. values=[심폐, 근지구력, 순발력, 유연성]"""
+    ws = get_worksheet(client, SHEET_CHALLENGE)
+    if ws is None:
+        return False, "챌린지기록 시트에 접근할 수 없습니다."
+
+    # 0 또는 공백 처리 (최소 하나는 양수여야 함)
+    values_clean = [int(v) if v and str(v).strip() else 0 for v in values]
+    total = sum(values_clean)
+
+    if total == 0:
+        return False, "최소 한 종목 이상 횟수를 입력해주세요."
+
+    today_str = now_kst().strftime("%Y-%m-%d")
+
+    # 기존 기록 확인
+    all_data = gs_retry(lambda: ws.get_all_values())
+    target_row = None
+    for i, row in enumerate(all_data):
+        if i == 0:
+            continue
+        if (len(row) >= 5 and str(row[0]) == str(grade) and str(row[1]) == str(cls)
+                and str(row[2]) == str(num) and str(row[4]) == str(week)):
+            target_row = i + 1
+            break
+
+    new_row = [
+        str(grade), str(cls), str(num), name, str(week), today_str,
+        values_clean[0], values_clean[1], values_clean[2], values_clean[3], total
+    ]
+
+    if target_row:
+        # 기존 기록 업데이트
+        gs_retry(lambda: ws.update(range_name=f"A{target_row}:K{target_row}", values=[new_row]))
+        clear_data_caches()
+        return True, f"{week}주차 기록이 수정되었습니다. (합계 {total})"
+    else:
+        # 신규 입력
+        gs_retry(lambda: ws.append_row(new_row))
+        clear_data_caches()
+        return True, f"{week}주차 기록이 저장되었습니다! (합계 {total})"
 
 def add_student(client, grade, cls, num, name, password):
     ws = get_worksheet(client, SHEET_STUDENTS)
@@ -938,17 +1084,15 @@ def show_my_group(client, info):
     else:
         st.info("모둠원이 없습니다.")
 
-    st.markdown("---")
-
     # 모둠 평균 체력 현황
-    st.markdown("**📊 우리 모둠 평균 체력 (최근 기록 기준)**")
+    st.markdown("---")
+    st.markdown("**📊 우리 모둠 평균 체력 (최근 측정 기준)**")
     all_records = get_all_records(client)
     avg = get_group_avg_records(all_records, group_df, info["grade"], info["class"], group_info["번호"])
 
     if avg.empty:
         st.info("아직 모둠원들의 기록이 없어요. 측정 후 다시 확인해보세요!")
     else:
-        # 4종목 카드 표시
         avg_cols = st.columns(4)
         for i, item in enumerate(ITEMS):
             with avg_cols[i]:
@@ -959,6 +1103,129 @@ def show_my_group(client, info):
                 else:
                     st.metric(label=label, value="기록 없음")
 
+    # ─── 🎯 오르다 100 챌린지 ───
+    st.markdown("---")
+    st.markdown("### 🎯 오르다 100 챌린지")
+
+    current_week = get_current_week()
+
+    if current_week is None:
+        st.info(f"📅 챌린지는 **{CHALLENGE_START_DATE}**부터 시작됩니다. 조금만 기다려주세요!")
+        return
+
+    available_weeks = get_available_weeks()
+    selected_week = st.selectbox(
+        "주차 선택",
+        available_weeks,
+        index=len(available_weeks) - 1,  # 기본값: 이번 주
+        format_func=lambda x: f"{x}주차" + (" (이번 주 ⭐)" if x == current_week else ""),
+        key="challenge_week",
+    )
+
+    challenge_df = get_challenge_records(client)
+
+    # 내 기록 조회
+    my_record = get_my_challenge_record(
+        challenge_df, info["grade"], info["class"], info["num"], selected_week
+    )
+
+    # 입력 폼
+    st.markdown(f"**📝 나의 {selected_week}주차 운동 횟수 입력**")
+
+    if my_record:
+        st.caption(f"✏️ 이미 입력한 기록이 있어요. 수정 후 다시 저장하면 업데이트됩니다. (현재 합계: {my_record.get('합계', 0)}회)")
+
+    with st.form(f"challenge_form_{selected_week}"):
+        cc1, cc2, cc3, cc4 = st.columns(4)
+
+        defaults = []
+        for label, emoji, color in CHALLENGE_ITEMS:
+            default_val = ""
+            if my_record:
+                v = my_record.get(label, 0)
+                try:
+                    if pd.to_numeric(v, errors="coerce") > 0:
+                        default_val = str(int(float(v)))
+                except Exception:
+                    pass
+            defaults.append(default_val)
+
+        inputs = []
+        for i, (label, emoji, color) in enumerate(CHALLENGE_ITEMS):
+            col = [cc1, cc2, cc3, cc4][i]
+            with col:
+                val = st.text_input(
+                    f"{emoji} {label}",
+                    value=defaults[i],
+                    placeholder="0",
+                    key=f"ch_{selected_week}_{label}",
+                )
+                inputs.append(val)
+
+        saved = st.form_submit_button("💾 저장", use_container_width=True)
+
+    if saved:
+        # 값 검증
+        parsed = []
+        errors = []
+        for i, (label, _, _) in enumerate(CHALLENGE_ITEMS):
+            val, err = parse_optional_int(inputs[i], label, min_value=0)
+            if err:
+                errors.append(err)
+            parsed.append(val if val is not None else 0)
+
+        if errors:
+            for e in errors:
+                st.error(e)
+        else:
+            ok, msg = save_challenge_record(
+                client, info["grade"], info["class"], info["num"], info["name"],
+                selected_week, parsed
+            )
+            if ok:
+                st.success(f"✅ {msg}")
+                st.rerun()
+            else:
+                st.error(f"❌ {msg}")
+
+    # 우리 모둠 현황
+    st.markdown(f"**🏆 우리 모둠 {selected_week}주차 현황**")
+
+    # 최신 챌린지 데이터 다시 가져오기
+    challenge_df = get_challenge_records(client)
+    result = get_group_challenge_total(
+        challenge_df, group_df, info["grade"], info["class"], group_info["번호"], selected_week
+    )
+
+    total = result["total"]
+    progress = min(total / CHALLENGE_GOAL, 1.0)
+
+    # 진행률 바
+    col_prog1, col_prog2 = st.columns([3, 1])
+    with col_prog1:
+        st.progress(progress)
+    with col_prog2:
+        if total >= CHALLENGE_GOAL:
+            st.markdown(f"### 🏆 {total} / {CHALLENGE_GOAL}")
+        else:
+            st.markdown(f"### {total} / {CHALLENGE_GOAL}")
+
+    if total >= CHALLENGE_GOAL:
+        extra = total - CHALLENGE_GOAL
+        if extra > 0:
+            st.success(f"🎉 **초과 달성!** 목표보다 {extra}회 더 해냈어요! 대단해요! 🔥")
+        else:
+            st.success("🎉 **목표 달성!** 우리 모둠 최고! 🏅")
+
+    # 모둠원별 입력 현황
+    st.markdown("**👫 모둠원 입력 현황**")
+    for ms in result["members_status"]:
+        name = ms["name"]
+        is_me = "⭐ " if name == info["name"] else ""
+        if ms["entered"]:
+            st.markdown(f"{is_me}✅ **{name}**: {ms['sum']}회")
+        else:
+            st.markdown(f"{is_me}⏰ {name}: *아직 입력 안 함*")
 
 def show_record_input(client, info, records):
     st.markdown("#### 📝 체력 측정 기록 입력")
@@ -1281,7 +1548,7 @@ def show_admin_page(client):
             with st.spinner("생성 중..."):
                 s1 = init_student_list(client)
                 s2 = init_records_sheet(client)
-
+                s3 = init_challenge_sheet(client)  # ← 이 줄 추가
                 if s1 and s2:
                     clear_data_caches()
                     st.success("✅ 초기 데이터 생성 완료!")
@@ -1694,6 +1961,55 @@ def show_admin_page(client):
                         else:
                             st.caption("기록 없음")
                         st.markdown("---")
+                        # ─── 🎯 챌린지 현황 ───
+                        st.markdown("---")
+                        st.markdown("### 🎯 오르다 100 챌린지 현황")
+
+                        current_week = get_current_week()
+                        if current_week is None:
+                            st.info(f"📅 챌린지는 {CHALLENGE_START_DATE}부터 시작됩니다.")
+                        else:
+                            available_weeks = get_available_weeks()
+                            ch_week = st.selectbox(
+                                "주차 선택",
+                                available_weeks,
+                                index=len(available_weeks) - 1,
+                                format_func=lambda x: f"{x}주차" + (" (이번 주)" if x == current_week else ""),
+                                key="admin_ch_week",
+                            )        
+
+                            challenge_df = get_challenge_records(client)
+
+                            st.markdown(f"**{sel_grade}학년 {sel_class}반 · {ch_week}주차**")
+
+                            ch_cols_per_row = 2
+                            for i in range(0, len(group_nums), ch_cols_per_row):
+                                ch_row_cols = st.columns(ch_cols_per_row)
+                                for j, gnum in enumerate(group_nums[i:i + ch_cols_per_row]):
+                                    with ch_row_cols[j]:
+                                        g_rows = class_group_df[class_group_df["모둠번호"].astype(str) == gnum]
+                                        gname = str(g_rows["모둠이름"].iloc[0]).strip() if not g_rows.empty else ""
+                                        if not gname:
+                                            gname = f"{gnum}모둠"
+
+                                        result = get_group_challenge_total(
+                                            challenge_df, group_df, sel_grade, sel_class, gnum, ch_week
+                                        )
+                                        total = result["total"]
+                                        progress = min(total / CHALLENGE_GOAL, 1.0)
+                                        entered_count = sum(1 for ms in result["members_status"] if ms["entered"])
+                                        total_members = len(result["members_status"])
+
+                                        if total >= CHALLENGE_GOAL:
+                                            extra = total - CHALLENGE_GOAL
+                                            status = f"🏆 {total}/{CHALLENGE_GOAL}" + (f" (+{extra})" if extra > 0 else " 달성!")
+                                        else:
+                                            status = f"{total}/{CHALLENGE_GOAL}"
+
+                                        st.markdown(f"**🏅 {gname}** — {status}")
+                                        st.progress(progress)
+                                        st.caption(f"입력 완료: {entered_count}/{total_members}명")
+                                        st.markdown("")
 
     st.markdown("---")
     with st.expander("📄 개인정보 처리방침"):
