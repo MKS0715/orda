@@ -735,6 +735,131 @@ def show_student_dashboard(client):
 def show_record_input(client, info, records):
     st.markdown("#### 📝 체력 측정 기록 입력")
 
+    # ==========================================
+    # ⏱️ 20초 타이머 & 스톱워치 HTML/JS 위젯
+    # ==========================================
+    timer_html = """
+    <div style="font-family: 'Malgun Gothic', sans-serif; text-align: center; padding: 10px; background: #f0f2f6; border-radius: 10px; margin-bottom: 20px;">
+        <h4 style="margin-top: 0; color: #31333F;">⏱️ 측정 도우미</h4>
+        
+        <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 150px; padding: 15px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <div style="font-size: 14px; font-weight: bold; color: #666;">⏳ 20초 타이머</div>
+                <div id="timerDisplay" style="font-size: 28px; font-weight: bold; color: #ff4b4b; margin: 10px 0;">20.00</div>
+                <button onclick="startTimer()" style="padding: 8px 15px; border: none; border-radius: 5px; background: #4CAF50; color: white; cursor: pointer; font-weight: bold;">시작</button>
+                <button onclick="resetTimer()" style="padding: 8px 15px; border: none; border-radius: 5px; background: #f44336; color: white; cursor: pointer; font-weight: bold;">리셋</button>
+            </div>
+
+            <div style="flex: 1; min-width: 150px; padding: 15px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <div style="font-size: 14px; font-weight: bold; color: #666;">⏱️ 스톱워치</div>
+                <div id="stopwatchDisplay" style="font-size: 28px; font-weight: bold; color: #31333F; margin: 10px 0;">00:00.00</div>
+                <button onclick="startStopwatch()" id="swStartBtn" style="padding: 8px 15px; border: none; border-radius: 5px; background: #008CBA; color: white; cursor: pointer; font-weight: bold;">시작</button>
+                <button onclick="resetStopwatch()" style="padding: 8px 15px; border: none; border-radius: 5px; background: #555; color: white; cursor: pointer; font-weight: bold;">리셋</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- 20초 타이머 로직 ---
+        let timerInterval;
+        let timerTime = 20000; 
+        const timerDisplay = document.getElementById('timerDisplay');
+
+        function updateTimerDisplay(ms) {
+            let seconds = Math.floor(ms / 1000);
+            let milliseconds = Math.floor((ms % 1000) / 10);
+            timerDisplay.innerText = seconds + "." + (milliseconds < 10 ? "0" : "") + milliseconds;
+        }
+
+        function startTimer() {
+            clearInterval(timerInterval);
+            timerTime = 20000;
+            timerDisplay.style.color = "#ff4b4b";
+            timerInterval = setInterval(() => {
+                timerTime -= 10;
+                if (timerTime <= 0) {
+                    clearInterval(timerInterval);
+                    timerTime = 0;
+                    timerDisplay.innerText = "종료! 🔔";
+                    timerDisplay.style.color = "#4CAF50";
+                } else {
+                    updateTimerDisplay(timerTime);
+                }
+            }, 10);
+        }
+
+        function resetTimer() {
+            clearInterval(timerInterval);
+            timerTime = 20000;
+            timerDisplay.style.color = "#ff4b4b";
+            updateTimerDisplay(timerTime);
+        }
+
+        // --- 스톱워치 로직 ---
+        let swInterval;
+        let swTime = 0;
+        let swRunning = false;
+        const swDisplay = document.getElementById('stopwatchDisplay');
+        const swStartBtn = document.getElementById('swStartBtn');
+
+        function updateSwDisplay(ms) {
+            let minutes = Math.floor(ms / 60000);
+            let seconds = Math.floor((ms % 60000) / 1000);
+            let milliseconds = Math.floor((ms % 1000) / 10);
+            swDisplay.innerText = 
+                (minutes < 10 ? "0" : "") + minutes + ":" + 
+                (seconds < 10 ? "0" : "") + seconds + "." + 
+                (milliseconds < 10 ? "0" : "") + milliseconds;
+        }
+
+        function startStopwatch() {
+            if (!swRunning) {
+                swRunning = true;
+                swStartBtn.innerText = "정지";
+                swStartBtn.style.background = "#ff9800";
+                let startTime = Date.now() - swTime;
+                swInterval = setInterval(() => {
+                    swTime = Date.now() - startTime;
+                    updateSwDisplay(swTime);
+                }, 10);
+            } else {
+                swRunning = false;
+                swStartBtn.innerText = "이어서";
+                swStartBtn.style.background = "#008CBA";
+                clearInterval(swInterval);
+            }
+        }
+
+        function resetStopwatch() {
+            swRunning = false;
+            clearInterval(swInterval);
+            swTime = 0;
+            swStartBtn.innerText = "시작";
+            swStartBtn.style.background = "#008CBA";
+            updateSwDisplay(swTime);
+        }
+    </script>
+    """
+    
+    # HTML 컴포넌트를 스트림릿 화면에 렌더링 (높이는 여유 있게 200px)
+    components.html(timer_html, height=200)
+    # ==========================================
+    
+    # 🌟 추가된 로직: 오늘 날짜(KST 기준) 구하기
+    kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
+    today_str = kst_now.strftime("%Y-%m-%d")
+
+    # 🌟 추가된 로직: 오늘 이미 저장한 기록이 있는지 확인
+    already_saved_today = False
+    if not records.empty:
+        if today_str in records["측정일"].values:
+            already_saved_today = True
+
+    # 🚨 오늘 이미 저장했다면 폼을 숨기고 안내 메시지만 출력
+    if already_saved_today:
+        st.warning("🚨 오늘의 체력 기록을 이미 저장했습니다! 대단해요! 👍\n\n(잘못 입력하여 수정이 필요하다면 선생님께 말씀해주세요.)")
+        return  # 아래 폼 코드가 실행되지 않고 여기서 함수 종료
+        
     if records.empty:
         next_round = 1
     else:
