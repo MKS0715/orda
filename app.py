@@ -24,6 +24,7 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────
 SHEET_STUDENTS = "학생명단"
 SHEET_RECORDS = "체력기록"
+SHEET_GROUPS = "모둠"
 KST = timezone(timedelta(hours=9))
 
 ITEMS = [
@@ -91,6 +92,7 @@ def clear_data_caches():
     get_student_list.clear()
     get_student_records.clear()
     get_all_records.clear()
+    get_group_data.clear()
 
 
 def hash_password(raw_password: str) -> str:
@@ -434,6 +436,77 @@ def get_student_records(_client, grade, cls, num):
         (df["반"] == str(cls)) &
         (df["번호"] == str(num))
     ].copy()
+
+
+@st.cache_data(ttl=60)
+def get_group_data(_client):
+    ws = get_worksheet(_client, SHEET_GROUPS, create_if_missing=False)
+    if ws is None:
+        return pd.DataFrame()
+    data = gs_retry(lambda: ws.get_all_records())
+    if not data:
+        return pd.DataFrame()
+    df = pd.DataFrame(data)
+    # 셀값 정리 (문자열 공백/NaN 제거)
+    for col in df.columns:
+        df[col] = df[col].apply(clean_cell)
+    return df
+
+
+def get_student_group(group_df, grade, cls, name):
+    """학생의 모둠 정보 반환. 없으면 None"""
+    if group_df.empty:
+        return None
+    match = group_df[
+        (group_df["학년"].astype(str) == str(grade)) &
+        (group_df["반"].astype(str) == str(cls)) &
+        (group_df["학생이름"] == str(name))
+    ]
+    if match.empty:
+        return None
+    row = match.iloc[0]
+    group_num = str(row.get("모둠번호", ""))
+    group_name = str(row.get("모둠이름", "")).strip()
+    if not group_name:
+        group_name = f"{group_num}모둠"
+    return {"번호": group_num, "이름": group_name}
+
+
+def get_group_members(group_df, grade, cls, group_num):
+    """같은 모둠 학생 목록 반환"""
+    if group_df.empty:
+        return []
+    members = group_df[
+        (group_df["학년"].astype(str) == str(grade)) &
+        (group_df["반"].astype(str) == str(cls)) &
+        (group_df["모둠번호"].astype(str) == str(group_num))
+    ]
+    return members["학생이름"].tolist()
+
+
+def get_group_avg_records(all_records_df, group_df, grade, cls, group_num):
+    """모둠원 전체 최근 기록의 평균 계산"""
+    members = get_group_members(group_df, grade, cls, group_num)
+    if not members or all_records_df.empty:
+        return pd.Series(dtype=float)
+
+    result = {}
+    for item in ITEMS:
+        vals = []
+        for name in members:
+            member_records = all_records_df[
+                (all_records_df["학년"].astype(str) == str(grade)) &
+                (all_records_df["반"].astype(str) == str(cls)) &
+                (all_records_df["이름"] == name)
+            ]
+            if member_records.empty or item not in member_records.columns:
+                continue
+            numeric = pd.to_numeric(member_records[item], errors="coerce").dropna()
+            if not numeric.empty:
+                vals.append(float(numeric.iloc[-1]))  # 가장 최근 기록
+        if vals:
+            result[item] = round(sum(vals) / len(vals), 1)
+    return pd.Series(result)
 
 
 # ─────────────────────────────────────────────────────
@@ -823,7 +896,7 @@ def show_student_dashboard(client):
 
     screen = st.radio(
         "메뉴 선택",
-        ["📝 기록 입력", "📊 성장 분석"],
+        ["📝 기록 입력", "📊 성장 분석", "👥 내 모둠"],
         horizontal=True,
         label_visibility="collapsed",
     )
@@ -832,8 +905,59 @@ def show_student_dashboard(client):
 
     if screen == "📝 기록 입력":
         show_record_input(client, info, records)
-    else:
+    elif screen == "📊 성장 분석":
         show_growth_analysis(records, info)
+    else:
+        show_my_group(client, info)
+
+
+def show_my_group(client, info):
+    st.markdown("#### 👥 내 모둠")
+
+    group_df = get_group_data(client)
+    group_info = get_student_group(group_df, info["grade"], info["class"], info["name"])
+
+    if group_info is None:
+        st.info("아직 모둠이 배정되지 않았어요. 선생님께 문의해주세요! 🙋")
+        return
+
+    # 모둠 기본 정보
+    st.success(f"🏅 **{group_info['이름']}** ({info['grade']}학년 {info['class']}반 {group_info['번호']}모둠)")
+
+    # 모둠원 목록
+    members = get_group_members(group_df, info["grade"], info["class"], group_info["번호"])
+    st.markdown("**👫 모둠원**")
+    if members:
+        member_cols = st.columns(len(members))
+        for i, name in enumerate(members):
+            with member_cols[i]:
+                if name == info["name"]:
+                    st.markdown(f"⭐ **{name}** *(나)*")
+                else:
+                    st.markdown(f"👤 {name}")
+    else:
+        st.info("모둠원이 없습니다.")
+
+    st.markdown("---")
+
+    # 모둠 평균 체력 현황
+    st.markdown("**📊 우리 모둠 평균 체력 (최근 기록 기준)**")
+    all_records = get_all_records(client)
+    avg = get_group_avg_records(all_records, group_df, info["grade"], info["class"], group_info["번호"])
+
+    if avg.empty:
+        st.info("아직 모둠원들의 기록이 없어요. 측정 후 다시 확인해보세요!")
+    else:
+        # 4종목 카드 표시
+        avg_cols = st.columns(4)
+        for i, item in enumerate(ITEMS):
+            with avg_cols[i]:
+                label = ITEM_LABELS[item]
+                unit = item.split("(")[1].replace(")", "")
+                if item in avg:
+                    st.metric(label=label, value=f"{avg[item]} {unit}")
+                else:
+                    st.metric(label=label, value="기록 없음")
 
 
 def show_record_input(client, info, records):
@@ -1143,7 +1267,7 @@ def show_admin_page(client):
 
     admin_menu = st.radio(
         "관리 메뉴",
-        ["🔄 초기 세팅", "📝 기록 입력", "👥 학생 관리", "📊 전체 기록"],
+        ["🔄 초기 세팅", "📝 기록 입력", "👥 학생 관리", "📊 전체 기록", "🏅 모둠 관리"],
         horizontal=True,
         label_visibility="collapsed",
     )
@@ -1506,6 +1630,70 @@ def show_admin_page(client):
             ]
             available_cols = [c for c in display_cols if c in filtered_records.columns]
             st.dataframe(filtered_records[available_cols], use_container_width=True, hide_index=True)
+
+    # ─── 메뉴5: 모둠 관리 ───
+    elif admin_menu == "🏅 모둠 관리":
+        st.markdown("#### 🏅 모둠 현황")
+
+        group_df = get_group_data(client)
+
+        if group_df.empty:
+            st.warning("모둠 시트에 데이터가 없습니다. 구글 시트 '모둠' 탭을 확인해주세요.")
+            st.info("📋 헤더 순서: 학년 | 반 | 모둠번호 | 모둠이름 | 학생이름")
+        else:
+            # 학급 필터
+            gf1, gf2 = st.columns(2)
+            with gf1:
+                g_grades = sorted(
+                    group_df["학년"].astype(str).unique().tolist(),
+                    key=lambda x: int(x) if x.isdigit() else x,
+                )
+                sel_grade = st.selectbox("학년", g_grades, format_func=lambda x: f"{x}학년", key="gm_grade")
+
+            grade_group_df = group_df[group_df["학년"].astype(str) == sel_grade]
+
+            with gf2:
+                g_classes = sorted(
+                    grade_group_df["반"].astype(str).unique().tolist(),
+                    key=lambda x: int(x) if x.isdigit() else x,
+                )
+                sel_class = st.selectbox("반", g_classes, format_func=lambda x: f"{x}반", key="gm_class")
+
+            class_group_df = grade_group_df[grade_group_df["반"].astype(str) == sel_class]
+            group_nums = sorted(
+                class_group_df["모둠번호"].astype(str).unique().tolist(),
+                key=lambda x: int(x) if x.isdigit() else x,
+            )
+
+            st.markdown(f"**{sel_grade}학년 {sel_class}반 — 총 {len(group_nums)}모둠**")
+
+            # 모둠별 카드 표시
+            all_records = get_all_records(client)
+
+            cols_per_row = 3
+            for i in range(0, len(group_nums), cols_per_row):
+                row_cols = st.columns(cols_per_row)
+                for j, gnum in enumerate(group_nums[i:i + cols_per_row]):
+                    with row_cols[j]:
+                        g_rows = class_group_df[class_group_df["모둠번호"].astype(str) == gnum]
+                        gname = ""
+                        if not g_rows.empty:
+                            gname = str(g_rows["모둠이름"].iloc[0]).strip()
+                        if not gname:
+                            gname = f"{gnum}모둠"
+                        members = g_rows["학생이름"].tolist()
+                        avg = get_group_avg_records(all_records, group_df, sel_grade, sel_class, gnum)
+
+                        st.markdown(f"**🏅 {gname}**")
+                        st.caption(" · ".join([f"👤{m}" for m in members]) if members else "학생 없음")
+                        if not avg.empty:
+                            for item in ITEMS:
+                                if item in avg:
+                                    unit = item.split("(")[1].replace(")", "")
+                                    st.caption(f"{ITEM_LABELS[item]}: **{avg[item]}{unit}**")
+                        else:
+                            st.caption("기록 없음")
+                        st.markdown("---")
 
     st.markdown("---")
     with st.expander("📄 개인정보 처리방침"):
