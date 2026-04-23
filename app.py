@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from google.oauth2.service_account import Credentials
 import google.generativeai as genai
+import streamlit.components.v1 as components
 
 # ─────────────────────────────────────────────────────
 # 페이지 설정
@@ -729,7 +730,7 @@ def show_student_dashboard(client):
     if screen == "📝 기록 입력":
         show_record_input(client, info, records)
     else:
-        show_growth_analysis(records)
+        show_growth_analysis(records, info)
 
 
 def show_record_input(client, info, records):
@@ -958,7 +959,7 @@ def show_record_input(client, info, records):
         st.dataframe(records[available_cols], use_container_width=True, hide_index=True)
 
 
-def show_growth_analysis(records):
+def show_growth_analysis(records,info):
     st.markdown("#### 📊 나의 성장 분석")
 
     if records.empty:
