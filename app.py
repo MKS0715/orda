@@ -1,14 +1,14 @@
 import hashlib
 import time
 from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Tuple
 
 import gspread
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from google.oauth2.service_account import Credentials
-import google.generativeai as genai
 import streamlit.components.v1 as components
+from google.oauth2.service_account import Credentials
 
 # ─────────────────────────────────────────────────────
 # 페이지 설정
@@ -24,6 +24,7 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────
 SHEET_STUDENTS = "학생명단"
 SHEET_RECORDS = "체력기록"
+KST = timezone(timedelta(hours=9))
 
 ITEMS = [
     "3분왕복달리기(회)",
@@ -82,6 +83,10 @@ PRIVACY_POLICY_MD = """
 # ─────────────────────────────────────────────────────
 # 공통 유틸
 # ─────────────────────────────────────────────────────
+def now_kst() -> datetime:
+    return datetime.now(timezone.utc).astimezone(KST)
+
+
 def clear_data_caches():
     get_student_list.clear()
     get_student_records.clear()
@@ -101,9 +106,33 @@ def verify_password(input_password: str, stored_password: str) -> bool:
         return False
 
     stored = str(stored_password).strip()
-    raw = str(input_password)
+    raw = str(input_password).strip()
 
     return stored == raw or stored == hash_password(raw)
+
+
+def clean_cell(v) -> str:
+    if pd.isna(v):
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    s = str(v).strip()
+    return "" if s.lower() == "nan" else s
+
+
+def normalize_password_cell(v) -> str:
+    s = clean_cell(v)
+
+    # sha256 해시이면 그대로 유지
+    if len(s) == 64 and all(c in "0123456789abcdef" for c in s.lower()):
+        return s
+
+    # "1.0" 같은 값 방지
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+
+    # 숫자 비밀번호면 앞자리를 0으로 채워 4자리 유지
+    return s.zfill(4) if s.isdigit() else s
 
 
 def sort_students_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -111,14 +140,14 @@ def sort_students_df(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     out = df.copy()
-    out["_grade_num"] = pd.to_numeric(out["학년"], errors="coerce")
-    out["_class_num"] = pd.to_numeric(out["반"], errors="coerce")
-    out["_num_num"] = pd.to_numeric(out["번호"], errors="coerce")
+    out["_grade_num"] = pd.to_numeric(out.get("학년"), errors="coerce")
+    out["_class_num"] = pd.to_numeric(out.get("반"), errors="coerce")
+    out["_num_num"] = pd.to_numeric(out.get("번호"), errors="coerce")
     out = out.sort_values(
         by=["_grade_num", "_class_num", "_num_num", "이름"],
         na_position="last"
     )
-    return out.drop(columns=["_grade_num", "_class_num", "_num_num"])
+    return out.drop(columns=["_grade_num", "_class_num", "_num_num"], errors="ignore")
 
 
 def normalize_student_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -126,16 +155,16 @@ def normalize_student_df(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     out = df.copy()
-    # 1. 비밀번호를 제외한 나머지 열 먼저 문자열 처리
+
     for col in ["학년", "반", "번호", "이름"]:
         if col in out.columns:
-            out[col] = out[col].astype(str).fillna("")
-            
-    # 2. 👇 비밀번호 열에 0이 사라지는 문제 해결 (zfill 4자리 채우기)
+            out[col] = out[col].apply(clean_cell)
+
     if "비밀번호" in out.columns:
-        out["비밀번호"] = out["비밀번호"].astype(str).fillna("").str.zfill(4)
+        out["비밀번호"] = out["비밀번호"].apply(normalize_password_cell)
 
     return sort_students_df(out)
+
 
 def normalize_records_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
@@ -145,41 +174,105 @@ def normalize_records_df(df: pd.DataFrame) -> pd.DataFrame:
 
     for col in ["학년", "반", "번호", "이름", "측정회차", "측정일"]:
         if col in out.columns:
-            out[col] = out[col].astype(str)
+            out[col] = out[col].apply(clean_cell)
 
-    out["_grade_num"] = pd.to_numeric(out["학년"], errors="coerce")
-    out["_class_num"] = pd.to_numeric(out["반"], errors="coerce")
-    out["_num_num"] = pd.to_numeric(out["번호"], errors="coerce")
-    out["_round_num"] = pd.to_numeric(out["측정회차"], errors="coerce")
-    out["_date_dt"] = pd.to_datetime(out["측정일"], errors="coerce")
+    out["_grade_num"] = pd.to_numeric(out.get("학년"), errors="coerce")
+    out["_class_num"] = pd.to_numeric(out.get("반"), errors="coerce")
+    out["_num_num"] = pd.to_numeric(out.get("번호"), errors="coerce")
+    out["_round_num"] = pd.to_numeric(out.get("측정회차"), errors="coerce")
+    out["_date_dt"] = pd.to_datetime(out.get("측정일"), errors="coerce")
 
     out = out.sort_values(
         by=["_grade_num", "_class_num", "_num_num", "_round_num", "_date_dt"],
         na_position="last"
     )
 
-    return out.drop(columns=["_grade_num", "_class_num", "_num_num", "_round_num", "_date_dt"])
+    return out.drop(
+        columns=["_grade_num", "_class_num", "_num_num", "_round_num", "_date_dt"],
+        errors="ignore"
+    )
 
 
-def get_class_options(df: pd.DataFrame) -> list[str]:
-    if df.empty:
+def get_class_options(df: pd.DataFrame) -> List[str]:
+    if df.empty or "반" not in df.columns:
         return []
     classes = df["반"].astype(str).dropna().unique().tolist()
     return sorted(classes, key=lambda x: int(x) if str(x).isdigit() else str(x))
 
 
-def get_grade_options(df: pd.DataFrame) -> list[str]:
-    if df.empty:
+def get_grade_options(df: pd.DataFrame) -> List[str]:
+    if df.empty or "학년" not in df.columns:
         return []
     grades = df["학년"].astype(str).dropna().unique().tolist()
     return sorted(grades, key=lambda x: int(x) if str(x).isdigit() else str(x))
 
 
-def get_student_options(df: pd.DataFrame) -> list[str]:
+def get_student_options(df: pd.DataFrame) -> List[str]:
     if df.empty:
         return []
     sorted_df = sort_students_df(df)
     return [f"{row['번호']}번 - {row['이름']}" for _, row in sorted_df.iterrows()]
+
+
+def parse_optional_int(raw_value: str, label: str, min_value: Optional[int] = None, max_value: Optional[int] = None) -> Tuple[Optional[int], Optional[str]]:
+    raw = str(raw_value).strip()
+    if raw == "":
+        return None, None
+
+    try:
+        num = float(raw)
+    except ValueError:
+        return None, f"'{label}'에는 숫자만 입력해주세요."
+
+    if not num.is_integer():
+        return None, f"'{label}'에는 정수를 입력해주세요."
+
+    value = int(num)
+
+    if min_value is not None and value < min_value:
+        return None, f"'{label}'은(는) {min_value} 이상이어야 합니다."
+    if max_value is not None and value > max_value:
+        return None, f"'{label}'은(는) {max_value} 이하여야 합니다."
+
+    return value, None
+
+
+def parse_optional_float(raw_value: str, label: str, min_value: Optional[float] = None, max_value: Optional[float] = None) -> Tuple[Optional[float], Optional[str]]:
+    raw = str(raw_value).strip()
+    if raw == "":
+        return None, None
+
+    try:
+        value = float(raw)
+    except ValueError:
+        return None, f"'{label}'에는 숫자만 입력해주세요."
+
+    if min_value is not None and value < min_value:
+        return None, f"'{label}'은(는) {min_value} 이상이어야 합니다."
+    if max_value is not None and value > max_value:
+        return None, f"'{label}'은(는) {max_value} 이하여야 합니다."
+
+    return value, None
+
+
+def gs_retry(func, retries: int = 4, base_delay: float = 1.0):
+    last_error = None
+    for attempt in range(retries):
+        try:
+            return func()
+        except gspread.exceptions.APIError as e:
+            last_error = e
+            msg = str(e)
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+
+            if status_code == 429 or "Quota exceeded" in msg or "Read requests per minute" in msg:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            raise
+        except Exception as e:
+            last_error = e
+            raise last_error
+    raise last_error
 
 
 # ─────────────────────────────────────────────────────
@@ -206,7 +299,7 @@ def get_google_connection():
         return None
 
 
-def get_spreadsheet_name() -> str | None:
+def get_spreadsheet_name() -> Optional[str]:
     if "spreadsheet_name" in st.secrets:
         return st.secrets["spreadsheet_name"]
 
@@ -217,6 +310,11 @@ def get_spreadsheet_name() -> str | None:
     return None
 
 
+@st.cache_resource
+def get_spreadsheet(_client, doc_name: str):
+    return gs_retry(lambda: _client.open(doc_name))
+
+
 def get_worksheet(client, sheet_name: str, create_if_missing: bool = True):
     try:
         doc_name = get_spreadsheet_name()
@@ -224,18 +322,18 @@ def get_worksheet(client, sheet_name: str, create_if_missing: bool = True):
             return None
 
         try:
-            spreadsheet = client.open(doc_name)
+            spreadsheet = get_spreadsheet(client, doc_name)
         except gspread.SpreadsheetNotFound:
             st.error(f"🚨 구글 드라이브에서 '{doc_name}' 스프레드시트를 찾을 수 없습니다.")
             st.info("💡 해결법: service account의 client_email을 스프레드시트 공유에 '편집자'로 추가해주세요.")
             return None
 
         try:
-            return spreadsheet.worksheet(sheet_name)
+            return gs_retry(lambda: spreadsheet.worksheet(sheet_name))
         except gspread.WorksheetNotFound:
             if not create_if_missing:
                 return None
-            return spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
+            return gs_retry(lambda: spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20))
 
     except Exception as e:
         st.error(f"🚨 데이터베이스 접근 중 에러 발생: {e}")
@@ -250,7 +348,7 @@ def init_student_list(client) -> bool:
     if ws is None:
         return False
 
-    existing = ws.get_all_values()
+    existing = gs_retry(lambda: ws.get_all_values())
     if len(existing) <= 1:
         headers = ["학년", "반", "번호", "이름", "비밀번호"]
         students = []
@@ -268,8 +366,8 @@ def init_student_list(client) -> bool:
                     hash_password(default_pw),
                 ])
 
-        ws.clear()
-        ws.update(range_name="A1", values=[headers] + students)
+        gs_retry(lambda: ws.clear())
+        gs_retry(lambda: ws.update(range_name="A1", values=[headers] + students))
         clear_data_caches()
 
     return True
@@ -280,15 +378,15 @@ def init_records_sheet(client) -> bool:
     if ws is None:
         return False
 
-    existing = ws.get_all_values()
+    existing = gs_retry(lambda: ws.get_all_values())
     if len(existing) <= 1:
         headers = [
             "학년", "반", "번호", "이름", "측정회차", "측정일",
             "3분왕복달리기(회)", "사이드스텝(회)",
             "플랭크(초)", "윗몸앞으로굽히기(cm)"
         ]
-        ws.clear()
-        ws.update(range_name="A1", values=[headers])
+        gs_retry(lambda: ws.clear())
+        gs_retry(lambda: ws.update(range_name="A1", values=[headers]))
         clear_data_caches()
 
     return True
@@ -303,7 +401,7 @@ def get_student_list(_client):
     if ws is None:
         return pd.DataFrame()
 
-    data = ws.get_all_records()
+    data = gs_retry(lambda: ws.get_all_records())
     if not data:
         return pd.DataFrame()
 
@@ -312,39 +410,30 @@ def get_student_list(_client):
 
 
 @st.cache_data(ttl=60)
-def get_student_records(_client, grade, cls, num):
-    ws = get_worksheet(_client, SHEET_RECORDS, create_if_missing=False)
-    if ws is None:
-        return pd.DataFrame()
-
-    data = ws.get_all_records()
-    if not data:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(data)
-    df = normalize_records_df(df)
-
-    df = df[
-        (df["학년"].astype(str) == str(grade)) &
-        (df["반"].astype(str) == str(cls)) &
-        (df["번호"].astype(str) == str(num))
-    ].copy()
-
-    return df
-
-
-@st.cache_data(ttl=60)
 def get_all_records(_client):
     ws = get_worksheet(_client, SHEET_RECORDS, create_if_missing=False)
     if ws is None:
         return pd.DataFrame()
 
-    data = ws.get_all_records()
+    data = gs_retry(lambda: ws.get_all_records())
     if not data:
         return pd.DataFrame()
 
     df = pd.DataFrame(data)
     return normalize_records_df(df)
+
+
+@st.cache_data(ttl=60)
+def get_student_records(_client, grade, cls, num):
+    df = get_all_records(_client)
+    if df.empty:
+        return pd.DataFrame()
+
+    return df[
+        (df["학년"] == str(grade)) &
+        (df["반"] == str(cls)) &
+        (df["번호"] == str(num))
+    ].copy()
 
 
 # ─────────────────────────────────────────────────────
@@ -367,7 +456,7 @@ def add_record(client, record):
         if not duplicate.empty:
             return False, f"{round_num}회차 기록이 이미 존재합니다."
 
-    ws.append_row(record)
+    gs_retry(lambda: ws.append_row(record))
     clear_data_caches()
     return True, f"{round_num}회차 기록이 저장되었습니다."
 
@@ -395,7 +484,7 @@ def add_student(client, grade, cls, num, name, password):
     if not duplicate.empty:
         return False, "같은 학년/반/번호의 학생이 이미 존재합니다."
 
-    ws.append_row([grade, cls, num, name, hash_password(password)])
+    gs_retry(lambda: ws.append_row([grade, cls, num, name, hash_password(password)]))
     clear_data_caches()
     return True, f"{name} 학생이 추가되었습니다."
 
@@ -405,7 +494,7 @@ def delete_student(client, grade, cls, num, delete_records=False):
     if student_ws is None:
         return False, "학생명단 시트에 접근할 수 없습니다."
 
-    student_data = student_ws.get_all_values()
+    student_data = gs_retry(lambda: student_ws.get_all_values())
     target_row = None
 
     for i, row in enumerate(student_data):
@@ -418,13 +507,13 @@ def delete_student(client, grade, cls, num, delete_records=False):
     if target_row is None:
         return False, "삭제할 학생을 찾지 못했습니다."
 
-    student_ws.delete_rows(target_row)
+    gs_retry(lambda: student_ws.delete_rows(target_row))
 
     deleted_record_count = 0
     if delete_records:
         record_ws = get_worksheet(client, SHEET_RECORDS, create_if_missing=False)
         if record_ws is not None:
-            record_data = record_ws.get_all_values()
+            record_data = gs_retry(lambda: record_ws.get_all_values())
             delete_row_indices = []
 
             for i, row in enumerate(record_data):
@@ -434,7 +523,7 @@ def delete_student(client, grade, cls, num, delete_records=False):
                     delete_row_indices.append(i + 1)
 
             for row_idx in reversed(delete_row_indices):
-                record_ws.delete_rows(row_idx)
+                gs_retry(lambda row_idx=row_idx: record_ws.delete_rows(row_idx))
                 deleted_record_count += 1
 
     clear_data_caches()
@@ -455,7 +544,7 @@ def update_student(client, grade, cls, num, new_name="", new_password="", sync_r
     if not new_name and not new_password:
         return False, "수정할 내용을 입력해주세요."
 
-    student_data = student_ws.get_all_values()
+    student_data = gs_retry(lambda: student_ws.get_all_values())
     target_row = None
 
     for i, row in enumerate(student_data):
@@ -469,21 +558,21 @@ def update_student(client, grade, cls, num, new_name="", new_password="", sync_r
         return False, "수정할 학생을 찾지 못했습니다."
 
     if new_name:
-        student_ws.update_cell(target_row, 4, new_name)
+        gs_retry(lambda: student_ws.update_cell(target_row, 4, new_name))
 
     if new_password:
-        student_ws.update_cell(target_row, 5, hash_password(new_password))
+        gs_retry(lambda: student_ws.update_cell(target_row, 5, hash_password(new_password)))
 
     updated_record_count = 0
     if new_name and sync_record_name:
         record_ws = get_worksheet(client, SHEET_RECORDS, create_if_missing=False)
         if record_ws is not None:
-            record_data = record_ws.get_all_values()
+            record_data = gs_retry(lambda: record_ws.get_all_values())
             for i, row in enumerate(record_data):
                 if i == 0:
                     continue
                 if len(row) >= 4 and str(row[0]) == str(grade) and str(row[1]) == str(cls) and str(row[2]) == str(num):
-                    record_ws.update_cell(i + 1, 4, new_name)
+                    gs_retry(lambda i=i: record_ws.update_cell(i + 1, 4, new_name))
                     updated_record_count += 1
 
     clear_data_caches()
@@ -497,38 +586,45 @@ def update_student(client, grade, cls, num, new_name="", new_password="", sync_r
 # ─────────────────────────────────────────────────────
 # 분석/시각화
 # ─────────────────────────────────────────────────────
-# 👇 기존 generate_item_feedback 대신 이 코드를 넣습니다.
 @st.cache_data(show_spinner=False, ttl=3600)
 def generate_gemini_feedback(records_df, item_name, student_name):
     if "GEMINI_API_KEY" not in st.secrets:
         return "⚠️ Secrets에 GEMINI_API_KEY가 없습니다. 관리자에게 문의하세요."
-        
-    import google.generativeai as genai
+
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        return "⚠️ google-generativeai 패키지가 설치되지 않았습니다."
+
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel('gemini-1.5-flash') 
-    
-    df = records_df[['측정회차', item_name]].dropna().sort_values('측정회차')
+    model = genai.GenerativeModel("gemini-1.5-flash")
+
+    df = records_df[["측정회차", item_name]].dropna().copy()
+    df["_round_num"] = pd.to_numeric(df["측정회차"], errors="coerce")
+    df = df.sort_values("_round_num")
+
     if len(df) < 2:
         return "💬 2회 이상 기록이 누적되면 AI 체육 선생님의 맞춤 분석이 제공됩니다!"
-        
+
     records_text = "\n".join([f"- {row['측정회차']}회차: {row[item_name]}" for _, row in df.iterrows()])
-    
+
     prompt = f"""
     당신은 초등학생들을 사랑으로 가르치는 다정하고 열정적인 체육 선생님입니다.
     학생의 이름은 '{student_name}'이며, '{item_name}' 종목의 체력 측정 기록은 다음과 같습니다.
-    
+
     [측정 기록]
     {records_text}
-    
-    위 데이터를 바탕으로 학생에게 직접 말하듯이 친절하고 격려하는 말투(해요체/해요)로 피드백을 작성해주세요. 
-    초등학생 눈높이에 맞게 이모지(🏃, 💪, ⚡ 등)를 듬뿍 사용해주세요. 
+
+    위 데이터를 바탕으로 학생에게 직접 말하듯이 친절하고 격려하는 말투(해요체/해요)로 피드백을 작성해주세요.
+    초등학생 눈높이에 맞게 이모지(🏃, 💪, ⚡ 등)를 적절히 사용해주세요.
     다음 3가지 내용이 반드시 순서대로 들어가야 합니다:
     1. 기록 변화 분석: 이전 회차와 비교해서 얼마나 발전했는지, 혹은 꾸준히 잘하고 있는지 구체적인 수치로 칭찬해주세요. (기록이 떨어졌다면 위로와 격려를 해주세요.)
     2. 따뜻한 격려: 학생의 노력에 대한 칭찬과 긍정적인 동기부여.
     3. 맞춤형 운동 추천: 이 종목({item_name})의 기록을 더 높이기 위해 집이나 학교에서 안전하게 할 수 있는 구체적이고 쉬운 맨몸 운동 1가지를 추천해주세요.
-    
-    너무 길지 않게 3~4문장 내외로 굵고 짧게 작성해주세요.
+
+    너무 길지 않게 3~4문장 내외로 작성해주세요.
     """
+
     try:
         response = model.generate_content(prompt)
         return response.text
@@ -635,51 +731,58 @@ def show_login_page(client):
             st.warning("학생 데이터가 없습니다. 관리자 모드에서 초기 세팅을 진행해주세요.")
         else:
             grade_options = get_grade_options(students)
-            selected_grade = st.selectbox("학년", grade_options, format_func=lambda x: f"{x}학년")
-
-            grade_df = students[students["학년"] == selected_grade]
-            class_options = get_class_options(grade_df)
-            selected_class = st.selectbox("반", class_options, format_func=lambda x: f"{x}반")
-
-            filtered = grade_df[grade_df["반"] == selected_class]
-            name_options = get_student_options(filtered)
-
-            if name_options:
-                selected_display = st.selectbox("이름", name_options)
+            if not grade_options:
+                st.warning("학년 정보가 없습니다.")
             else:
-                selected_display = None
-                st.warning("해당 반에 학생이 없습니다.")
+                selected_grade = st.selectbox("학년", grade_options, format_func=lambda x: f"{x}학년")
 
-            password = st.text_input("비밀번호", type="password", placeholder="비밀번호 입력")
+                grade_df = students[students["학년"] == selected_grade]
+                class_options = get_class_options(grade_df)
 
-            if st.button("🚀 로그인", use_container_width=True):
-                if not selected_display or not password:
-                    st.warning("이름과 비밀번호를 확인해주세요.")
+                if not class_options:
+                    st.warning("해당 학년에 반 정보가 없습니다.")
                 else:
-                    sel_num = selected_display.split("번")[0].strip()
+                    selected_class = st.selectbox("반", class_options, format_func=lambda x: f"{x}반")
 
-                    selected_student = students[
-                        (students["학년"] == selected_grade) &
-                        (students["반"] == selected_class) &
-                        (students["번호"] == sel_num)
-                    ]
+                    filtered = grade_df[grade_df["반"] == selected_class]
+                    name_options = get_student_options(filtered)
 
-                    if selected_student.empty:
-                        st.error("선택한 학생 정보를 찾을 수 없습니다.")
+                    if name_options:
+                        selected_display = st.selectbox("이름", name_options)
                     else:
-                        stored_password = selected_student.iloc[0]["비밀번호"]
-                        if verify_password(password, stored_password):
-                            st.session_state.logged_in = True
-                            st.session_state.student_info = {
-                                "grade": selected_grade,
-                                "class": selected_class,
-                                "num": sel_num,
-                                "name": selected_student.iloc[0]["이름"],
-                            }
-                            st.session_state.is_admin = False
-                            st.rerun()
+                        selected_display = None
+                        st.warning("해당 반에 학생이 없습니다.")
+
+                    password = st.text_input("비밀번호", type="password", placeholder="비밀번호 입력")
+
+                    if st.button("🚀 로그인", use_container_width=True):
+                        if not selected_display or not password:
+                            st.warning("이름과 비밀번호를 확인해주세요.")
                         else:
-                            st.error("비밀번호가 틀렸습니다.")
+                            sel_num = selected_display.split("번")[0].strip()
+
+                            selected_student = students[
+                                (students["학년"] == selected_grade) &
+                                (students["반"] == selected_class) &
+                                (students["번호"] == sel_num)
+                            ]
+
+                            if selected_student.empty:
+                                st.error("선택한 학생 정보를 찾을 수 없습니다.")
+                            else:
+                                stored_password = selected_student.iloc[0]["비밀번호"]
+                                if verify_password(password, stored_password):
+                                    st.session_state.logged_in = True
+                                    st.session_state.student_info = {
+                                        "grade": selected_grade,
+                                        "class": selected_class,
+                                        "num": sel_num,
+                                        "name": selected_student.iloc[0]["이름"],
+                                    }
+                                    st.session_state.is_admin = False
+                                    st.rerun()
+                                else:
+                                    st.error("비밀번호가 틀렸습니다.")
 
         st.markdown("---")
         with st.expander("🔧 관리자 모드"):
@@ -736,13 +839,10 @@ def show_student_dashboard(client):
 def show_record_input(client, info, records):
     st.markdown("#### 📝 체력 측정 기록 입력")
 
-    # ==========================================
-    # ⏱️ 20초 타이머 & 스톱워치 HTML/JS 위젯
-    # ==========================================
     timer_html = """
     <div style="font-family: 'Malgun Gothic', sans-serif; text-align: center; padding: 10px; background: #f0f2f6; border-radius: 10px; margin-bottom: 20px;">
         <h4 style="margin-top: 0; color: #31333F;">⏱️ 측정 도우미</h4>
-        
+
         <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
             <div style="flex: 1; min-width: 150px; padding: 15px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
                 <div style="font-size: 14px; font-weight: bold; color: #666;">⏳ 20초 타이머</div>
@@ -761,9 +861,8 @@ def show_record_input(client, info, records):
     </div>
 
     <script>
-        // --- 20초 타이머 로직 ---
         let timerInterval;
-        let timerTime = 20000; 
+        let timerTime = 20000;
         const timerDisplay = document.getElementById('timerDisplay');
 
         function updateTimerDisplay(ms) {
@@ -796,7 +895,6 @@ def show_record_input(client, info, records):
             updateTimerDisplay(timerTime);
         }
 
-        // --- 스톱워치 로직 ---
         let swInterval;
         let swTime = 0;
         let swRunning = false;
@@ -807,9 +905,9 @@ def show_record_input(client, info, records):
             let minutes = Math.floor(ms / 60000);
             let seconds = Math.floor((ms % 60000) / 1000);
             let milliseconds = Math.floor((ms % 1000) / 10);
-            swDisplay.innerText = 
-                (minutes < 10 ? "0" : "") + minutes + ":" + 
-                (seconds < 10 ? "0" : "") + seconds + "." + 
+            swDisplay.innerText =
+                (minutes < 10 ? "0" : "") + minutes + ":" +
+                (seconds < 10 ? "0" : "") + seconds + "." +
                 (milliseconds < 10 ? "0" : "") + milliseconds;
         }
 
@@ -841,26 +939,20 @@ def show_record_input(client, info, records):
         }
     </script>
     """
-    
-    # HTML 컴포넌트를 스트림릿 화면에 렌더링 (높이는 여유 있게 200px)
-    components.html(timer_html, height=200)
-    # ==========================================
-    
-    # 🌟 추가된 로직: 오늘 날짜(KST 기준) 구하기
-    kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
-    today_str = kst_now.strftime("%Y-%m-%d")
 
-    # 🌟 추가된 로직: 오늘 이미 저장한 기록이 있는지 확인
+    components.html(timer_html, height=220)
+
+    today_str = now_kst().strftime("%Y-%m-%d")
+
     already_saved_today = False
-    if not records.empty:
+    if not records.empty and "측정일" in records.columns:
         if today_str in records["측정일"].values:
             already_saved_today = True
 
-    # 🚨 오늘 이미 저장했다면 폼을 숨기고 안내 메시지만 출력
     if already_saved_today:
         st.warning("🚨 오늘의 체력 기록을 이미 저장했습니다! 대단해요! 👍\n\n(잘못 입력하여 수정이 필요하다면 선생님께 말씀해주세요.)")
-        return  # 아래 폼 코드가 실행되지 않고 여기서 함수 종료
-        
+        return
+
     if records.empty:
         next_round = 1
     else:
@@ -878,54 +970,71 @@ def show_record_input(client, info, records):
                 help="학생 계정에서는 다음 회차만 자동으로 입력됩니다.",
             )
         with col_date:
-            kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
-            measure_date = st.date_input("측정일", value=kst_now)
+            measure_date = st.date_input("측정일", value=now_kst().date())
 
         st.markdown("---")
 
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("##### 🏃 심폐지구력")
-            v1 = st.number_input(
+            v1_raw = st.text_input(
                 "3분 왕복달리기 (회)",
-                min_value=0,
-                value=None,
+                value="",
                 placeholder="미입력",
                 key="sv1",
                 help="전원 동시, 2인 1조",
             )
             st.markdown("##### 💪 근지구력")
-            v3 = st.number_input(
+            v3_raw = st.text_input(
                 "플랭크 (초, 최대 180초)",
-                min_value=0,
-                max_value=180,
-                value=None,
+                value="",
                 placeholder="미입력",
                 key="sv3",
                 help="2인 1조 관찰",
             )
         with c2:
             st.markdown("##### ⚡ 순발력")
-            v2 = st.number_input(
+            v2_raw = st.text_input(
                 "사이드스텝 (회/20초)",
-                min_value=0,
-                value=None,
+                value="",
                 placeholder="미입력",
                 key="sv2",
             )
             st.markdown("##### 🧘 유연성")
-            v4 = st.number_input(
+            v4_raw = st.text_input(
                 "윗몸앞으로굽히기 (cm)",
-                min_value=-30.0,
-                value=None,
-                step=0.5,
+                value="",
                 placeholder="미입력",
                 key="sv4",
+                help="0.5 단위 입력 가능",
             )
 
         submitted = st.form_submit_button("💾 기록 저장", use_container_width=True)
 
     if submitted:
+        errors = []
+
+        v1, err = parse_optional_int(v1_raw, "3분 왕복달리기 (회)", min_value=0)
+        if err:
+            errors.append(err)
+
+        v2, err = parse_optional_int(v2_raw, "사이드스텝 (회/20초)", min_value=0)
+        if err:
+            errors.append(err)
+
+        v3, err = parse_optional_int(v3_raw, "플랭크 (초)", min_value=0, max_value=180)
+        if err:
+            errors.append(err)
+
+        v4, err = parse_optional_float(v4_raw, "윗몸앞으로굽히기 (cm)", min_value=-30.0)
+        if err:
+            errors.append(err)
+
+        if errors:
+            for err in errors:
+                st.error(err)
+            return
+
         record = [
             info["grade"],
             info["class"],
@@ -959,7 +1068,7 @@ def show_record_input(client, info, records):
         st.dataframe(records[available_cols], use_container_width=True, hide_index=True)
 
 
-def show_growth_analysis(records,info):
+def show_growth_analysis(records, info):
     st.markdown("#### 📊 나의 성장 분석")
 
     if records.empty:
@@ -979,16 +1088,16 @@ def show_growth_analysis(records,info):
             else:
                 st.info(f"{item.split('(')[0]} 기록이 없습니다.")
 
-            short_name = item.split('(')[0]
+            short_name = item.split("(")[0]
             with st.spinner(f"🤖 AI가 {short_name} 기록을 분석하고 있어요..."):
-                feedback = generate_gemini_feedback(records, item, info['name'])
-            
+                feedback = generate_gemini_feedback(records, item, info["name"])
+
             if feedback.startswith("💬") or feedback.startswith("⚠️"):
                 st.info(feedback)
             else:
                 st.success(f"**🤖 AI 체육 선생님의 맞춤 피드백**\n\n{feedback}")
             st.markdown("")
-            
+
     st.markdown("---")
     st.markdown("#### 📊 4종목 누적 기록 요약")
 
@@ -1032,12 +1141,15 @@ def show_admin_page(client):
             st.session_state.student_info = {}
             st.rerun()
 
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["🔄 초기 세팅", "📝 기록 입력", "👥 학생 관리", "📊 전체 기록"]
+    admin_menu = st.radio(
+        "관리 메뉴",
+        ["🔄 초기 세팅", "📝 기록 입력", "👥 학생 관리", "📊 전체 기록"],
+        horizontal=True,
+        label_visibility="collapsed",
     )
 
-    # ─── 탭1: 초기 세팅 ───
-    with tab1:
+    # ─── 메뉴1: 초기 세팅 ───
+    if admin_menu == "🔄 초기 세팅":
         st.markdown("#### 🔄 초기 데이터 생성")
         st.warning("⚠️ 처음 한 번만 실행하세요. 기존 데이터가 있으면 건너뜁니다.")
 
@@ -1050,12 +1162,12 @@ def show_admin_page(client):
                     clear_data_caches()
                     st.success("✅ 초기 데이터 생성 완료!")
                     st.info("3~6학년 1반(각 18명 기준) 더미 데이터가 등록되었습니다.")
-                    st.info("👥 학생 관리 탭에서 실제 이름으로 수정해주세요.")
+                    st.info("👥 학생 관리 메뉴에서 실제 이름으로 수정해주세요.")
                 else:
                     st.error("❌ 초기 세팅에 실패했습니다.")
 
-    # ─── 탭2: 기록 입력 ───
-    with tab2:
+    # ─── 메뉴2: 기록 입력 ───
+    elif admin_menu == "📝 기록 입력":
         st.markdown("#### 📝 체력 측정 기록 입력 (관리자)")
         students = get_student_list(client)
 
@@ -1066,6 +1178,9 @@ def show_admin_page(client):
 
             with col_sel1:
                 grade_options = get_grade_options(students)
+                if not grade_options:
+                    st.warning("학년 정보가 없습니다.")
+                    return
                 grade = st.selectbox(
                     "학년",
                     grade_options,
@@ -1077,6 +1192,9 @@ def show_admin_page(client):
 
             with col_sel2:
                 class_options = get_class_options(filtered_grade)
+                if not class_options:
+                    st.warning("해당 학년의 반 정보가 없습니다.")
+                    return
                 cls_val = st.selectbox(
                     "반",
                     class_options,
@@ -1088,6 +1206,9 @@ def show_admin_page(client):
             student_options = get_student_options(filtered_students)
 
             with col_sel3:
+                if not student_options:
+                    st.warning("해당 반에 학생이 없습니다.")
+                    return
                 selected = st.selectbox("학생 선택", student_options, key="ar_student")
 
             if selected:
@@ -1113,41 +1234,34 @@ def show_admin_page(client):
                             key="ar_round",
                         )
                     with col_d:
-                        kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
-                        measure_date = st.date_input("측정일", value=kst_now, key="ar_date")
+                        measure_date = st.date_input("측정일", value=now_kst().date(), key="ar_date")
 
                     st.markdown("**체력 측정 항목 (측정하지 않은 종목은 비워두세요)**")
                     c1, c2 = st.columns(2)
 
                     with c1:
-                        v1 = st.number_input(
+                        v1_raw = st.text_input(
                             "3분 왕복달리기 (회)",
-                            min_value=0,
-                            value=None,
+                            value="",
                             placeholder="미측정",
                             key="ar_v1",
                         )
-                        v3 = st.number_input(
+                        v3_raw = st.text_input(
                             "플랭크 (초, 최대 180)",
-                            min_value=0,
-                            max_value=180,
-                            value=None,
+                            value="",
                             placeholder="미측정",
                             key="ar_v3",
                         )
                     with c2:
-                        v2 = st.number_input(
+                        v2_raw = st.text_input(
                             "사이드스텝 (회/20초)",
-                            min_value=0,
-                            value=None,
+                            value="",
                             placeholder="미측정",
                             key="ar_v2",
                         )
-                        v4 = st.number_input(
+                        v4_raw = st.text_input(
                             "윗몸앞으로굽히기 (cm)",
-                            min_value=-30.0,
-                            value=None,
-                            step=0.5,
+                            value="",
                             placeholder="미측정",
                             key="ar_v4",
                         )
@@ -1155,6 +1269,29 @@ def show_admin_page(client):
                     submitted = st.form_submit_button("💾 기록 저장", use_container_width=True)
 
                 if submitted:
+                    errors = []
+
+                    v1, err = parse_optional_int(v1_raw, "3분 왕복달리기 (회)", min_value=0)
+                    if err:
+                        errors.append(err)
+
+                    v2, err = parse_optional_int(v2_raw, "사이드스텝 (회/20초)", min_value=0)
+                    if err:
+                        errors.append(err)
+
+                    v3, err = parse_optional_int(v3_raw, "플랭크 (초)", min_value=0, max_value=180)
+                    if err:
+                        errors.append(err)
+
+                    v4, err = parse_optional_float(v4_raw, "윗몸앞으로굽히기 (cm)", min_value=-30.0)
+                    if err:
+                        errors.append(err)
+
+                    if errors:
+                        for err in errors:
+                            st.error(err)
+                        return
+
                     record = [
                         grade,
                         cls_val,
@@ -1175,8 +1312,8 @@ def show_admin_page(client):
                     else:
                         st.error(f"❌ {msg}")
 
-    # ─── 탭3: 학생 관리 ───
-    with tab3:
+    # ─── 메뉴3: 학생 관리 ───
+    elif admin_menu == "👥 학생 관리":
         st.markdown("#### 👥 학생 명단 관리")
         students = get_student_list(client)
 
@@ -1215,97 +1352,126 @@ def show_admin_page(client):
             st.markdown("---")
             st.markdown("**🗑️ 학생 삭제**")
 
-            del_col1, del_col2, del_col3 = st.columns(3)
-            with del_col1:
-                del_grade = st.selectbox(
-                    "학년 선택",
-                    get_grade_options(students),
-                    key="del_grade",
-                    format_func=lambda x: f"{x}학년",
-                )
+            grade_options = get_grade_options(students)
+            if grade_options:
+                del_col1, del_col2, del_col3 = st.columns(3)
+                with del_col1:
+                    del_grade = st.selectbox(
+                        "학년 선택",
+                        grade_options,
+                        key="del_grade",
+                        format_func=lambda x: f"{x}학년",
+                    )
 
-            del_grade_df = students[students["학년"] == del_grade]
+                del_grade_df = students[students["학년"] == del_grade]
 
-            with del_col2:
-                del_class = st.selectbox(
-                    "반 선택",
-                    get_class_options(del_grade_df),
-                    key="del_class",
-                    format_func=lambda x: f"{x}반",
-                )
+                with del_col2:
+                    del_class_options = get_class_options(del_grade_df)
+                    if not del_class_options:
+                        st.warning("삭제 가능한 반 정보가 없습니다.")
+                        del_grade = None
+                    else:
+                        del_class = st.selectbox(
+                            "반 선택",
+                            del_class_options,
+                            key="del_class",
+                            format_func=lambda x: f"{x}반",
+                        )
 
-            del_students_df = del_grade_df[del_grade_df["반"] == del_class]
-            del_options = get_student_options(del_students_df)
+                if del_grade is not None and del_class_options:
+                    del_students_df = del_grade_df[del_grade_df["반"] == del_class]
+                    del_options = get_student_options(del_students_df)
 
-            with del_col3:
-                del_selected = st.selectbox("삭제할 학생", del_options, key="del_student")
+                    with del_col3:
+                        if del_options:
+                            del_selected = st.selectbox("삭제할 학생", del_options, key="del_student")
+                        else:
+                            del_selected = None
+                            st.warning("삭제할 학생이 없습니다.")
 
-            delete_records_too = st.checkbox("체력기록도 함께 삭제", value=False, key="delete_records_too")
+                    delete_records_too = st.checkbox("체력기록도 함께 삭제", value=False, key="delete_records_too")
 
-            if st.button("🗑️ 삭제", use_container_width=True):
-                d_num = del_selected.split("번")[0].strip()
-                ok, msg = delete_student(client, del_grade, del_class, d_num, delete_records=delete_records_too)
-                if ok:
-                    st.success(f"✅ {msg}")
-                    st.rerun()
-                else:
-                    st.error(f"❌ {msg}")
+                    if st.button("🗑️ 삭제", use_container_width=True):
+                        if not del_selected:
+                            st.warning("삭제할 학생을 선택해주세요.")
+                        else:
+                            d_num = del_selected.split("번")[0].strip()
+                            ok, msg = delete_student(client, del_grade, del_class, d_num, delete_records=delete_records_too)
+                            if ok:
+                                st.success(f"✅ {msg}")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {msg}")
 
             st.markdown("---")
             st.markdown("**✏️ 학생 정보 수정**")
 
-            edit_col1, edit_col2, edit_col3 = st.columns(3)
-            with edit_col1:
-                edit_grade = st.selectbox(
-                    "학년 선택",
-                    get_grade_options(students),
-                    key="edit_grade",
-                    format_func=lambda x: f"{x}학년",
-                )
+            if grade_options:
+                edit_col1, edit_col2, edit_col3 = st.columns(3)
+                with edit_col1:
+                    edit_grade = st.selectbox(
+                        "학년 선택",
+                        grade_options,
+                        key="edit_grade",
+                        format_func=lambda x: f"{x}학년",
+                    )
 
-            edit_grade_df = students[students["학년"] == edit_grade]
+                edit_grade_df = students[students["학년"] == edit_grade]
 
-            with edit_col2:
-                edit_class = st.selectbox(
-                    "반 선택",
-                    get_class_options(edit_grade_df),
-                    key="edit_class",
-                    format_func=lambda x: f"{x}반",
-                )
+                with edit_col2:
+                    edit_class_options = get_class_options(edit_grade_df)
+                    if not edit_class_options:
+                        st.warning("수정 가능한 반 정보가 없습니다.")
+                        edit_grade = None
+                    else:
+                        edit_class = st.selectbox(
+                            "반 선택",
+                            edit_class_options,
+                            key="edit_class",
+                            format_func=lambda x: f"{x}반",
+                        )
 
-            edit_students_df = edit_grade_df[edit_grade_df["반"] == edit_class]
-            edit_options = get_student_options(edit_students_df)
+                if edit_grade is not None and edit_class_options:
+                    edit_students_df = edit_grade_df[edit_grade_df["반"] == edit_class]
+                    edit_options = get_student_options(edit_students_df)
 
-            with edit_col3:
-                edit_selected = st.selectbox("수정할 학생", edit_options, key="edit_student")
+                    with edit_col3:
+                        if edit_options:
+                            edit_selected = st.selectbox("수정할 학생", edit_options, key="edit_student")
+                        else:
+                            edit_selected = None
+                            st.warning("수정할 학생이 없습니다.")
 
-            ec1, ec2 = st.columns(2)
-            with ec1:
-                edit_name = st.text_input("새 이름", key="edit_name")
-            with ec2:
-                edit_pw = st.text_input("새 비밀번호", type="password", key="edit_pw")
+                    ec1, ec2 = st.columns(2)
+                    with ec1:
+                        edit_name = st.text_input("새 이름", key="edit_name")
+                    with ec2:
+                        edit_pw = st.text_input("새 비밀번호", type="password", key="edit_pw")
 
-            sync_record_name = st.checkbox("기존 체력기록 이름도 함께 수정", value=True, key="sync_record_name")
+                    sync_record_name = st.checkbox("기존 체력기록 이름도 함께 수정", value=True, key="sync_record_name")
 
-            if st.button("✏️ 수정", use_container_width=True):
-                e_num = edit_selected.split("번")[0].strip()
-                ok, msg = update_student(
-                    client,
-                    edit_grade,
-                    edit_class,
-                    e_num,
-                    new_name=edit_name,
-                    new_password=edit_pw,
-                    sync_record_name=sync_record_name,
-                )
-                if ok:
-                    st.success(f"✅ {msg}")
-                    st.rerun()
-                else:
-                    st.warning(msg)
+                    if st.button("✏️ 수정", use_container_width=True):
+                        if not edit_selected:
+                            st.warning("수정할 학생을 선택해주세요.")
+                        else:
+                            e_num = edit_selected.split("번")[0].strip()
+                            ok, msg = update_student(
+                                client,
+                                edit_grade,
+                                edit_class,
+                                e_num,
+                                new_name=edit_name,
+                                new_password=edit_pw,
+                                sync_record_name=sync_record_name,
+                            )
+                            if ok:
+                                st.success(f"✅ {msg}")
+                                st.rerun()
+                            else:
+                                st.warning(msg)
 
-    # ─── 탭4: 전체 기록 ───
-    with tab4:
+    # ─── 메뉴4: 전체 기록 ───
+    elif admin_menu == "📊 전체 기록":
         st.markdown("#### 📊 전체 기록 확인")
         all_records = get_all_records(client)
 
@@ -1315,9 +1481,10 @@ def show_admin_page(client):
             vf1, vf2 = st.columns(2)
 
             with vf1:
+                grade_options = ["전체"] + get_grade_options(all_records)
                 view_grade = st.selectbox(
                     "학년 선택",
-                    ["전체"] + get_grade_options(all_records),
+                    grade_options,
                     key="view_grade",
                 )
 
@@ -1337,9 +1504,8 @@ def show_admin_page(client):
                 "학년", "반", "번호", "이름", "측정회차", "측정일",
                 "3분왕복달리기(회)", "사이드스텝(회)", "플랭크(초)", "윗몸앞으로굽히기(cm)"
             ]
-            filtered_records = filtered_records[display_cols]
-
-            st.dataframe(filtered_records, use_container_width=True, hide_index=True)
+            available_cols = [c for c in display_cols if c in filtered_records.columns]
+            st.dataframe(filtered_records[available_cols], use_container_width=True, hide_index=True)
 
     st.markdown("---")
     with st.expander("📄 개인정보 처리방침"):
