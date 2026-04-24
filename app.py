@@ -30,10 +30,10 @@ KST = timezone(timedelta(hours=9))
 
 # 오르다 100 챌린지 설정
 CHALLENGE_START_DATE = "2026-05-06"  # 챌린지 시작일 (2회차 측정일)
-CHALLENGE_TOTAL_WEEKS = 9  # 총 9주간 진행
 CHALLENGE_GOAL = 100  # 주당 목표 점수
 CHALLENGE_MAX_COUNT = 50  # 1회 입력 최대 횟수
 CHALLENGE_MAX_PER_DAY = 3  # 같은 종목 하루 최대 입력 횟수
+CHALLENGE_RECENT_WEEKS = 12  # 드롭다운에 표시할 최근 주차 수
 
 # 챌린지 체력 요소 (라벨, 이모지, 예시 운동)
 CHALLENGE_ELEMENTS = [
@@ -105,7 +105,7 @@ def now_kst() -> datetime:
 
 
 def get_current_week() -> Optional[int]:
-    """오늘이 챌린지 몇 주차인지 반환. 시작 전이면 None, 총 주차 초과 시 마지막 주차로 고정"""
+    """오늘이 챌린지 몇 주차인지 반환. 시작 전이면 None. 상한 없음 (무제한)"""
     today = now_kst().date()
     start = datetime.strptime(CHALLENGE_START_DATE, "%Y-%m-%d").date()
 
@@ -114,15 +114,23 @@ def get_current_week() -> Optional[int]:
 
     days_passed = (today - start).days
     week = days_passed // 7 + 1
-    return min(week, CHALLENGE_TOTAL_WEEKS)
+    return week
 
 
-def get_available_weeks() -> List[int]:
-    """현재 시점까지 열린 주차 목록"""
+def get_available_weeks(recent_only: bool = True) -> List[int]:
+    """
+    현재 시점까지 열린 주차 목록.
+    recent_only=True면 최근 CHALLENGE_RECENT_WEEKS주만, False면 전체.
+    최신 주차가 맨 앞에 오도록 내림차순 정렬.
+    """
     current = get_current_week()
     if current is None:
         return []
-    return list(range(1, current + 1))
+    if recent_only:
+        start_week = max(1, current - CHALLENGE_RECENT_WEEKS + 1)
+    else:
+        start_week = 1
+    return list(range(current, start_week - 1, -1))
 
 
 def get_week_date_range(week: int) -> Tuple[str, str]:
@@ -131,6 +139,26 @@ def get_week_date_range(week: int) -> Tuple[str, str]:
     week_start = start + timedelta(days=(week - 1) * 7)
     week_end = week_start + timedelta(days=6)
     return week_start.strftime("%Y-%m-%d"), week_end.strftime("%Y-%m-%d")
+
+
+def format_week_label(week: int, current_week: Optional[int] = None) -> str:
+    """드롭다운용 주차 라벨 생성: '3주차 (5/20~5/26) ⭐'"""
+    week_start, week_end = get_week_date_range(week)
+    # 월/일만 간략하게 표시
+    start_short = datetime.strptime(week_start, "%Y-%m-%d").strftime("%-m/%-d") if hasattr(datetime, 'strptime') else week_start[5:].replace("-", "/")
+    try:
+        start_dt = datetime.strptime(week_start, "%Y-%m-%d")
+        end_dt = datetime.strptime(week_end, "%Y-%m-%d")
+        start_short = f"{start_dt.month}/{start_dt.day}"
+        end_short = f"{end_dt.month}/{end_dt.day}"
+    except Exception:
+        start_short = week_start[5:]
+        end_short = week_end[5:]
+
+    label = f"{week}주차 ({start_short}~{end_short})"
+    if current_week is not None and week == current_week:
+        label += " ⭐"
+    return label
 
 
 def clear_data_caches():
@@ -658,6 +686,60 @@ def get_group_challenge_total(challenge_df, group_df, grade, cls, group_num, wee
     return {"total": total, "members_status": members_status}
 
 
+def get_group_cumulative_total(challenge_df, group_df, grade, cls, group_num):
+    """모둠의 전체 기간 누적 합계 반환"""
+    members = get_group_members(group_df, grade, cls, group_num)
+    if not members or challenge_df.empty:
+        return {"total": 0, "weeks_achieved": 0, "total_weeks": 0}
+
+    total = 0
+    weeks_achieved = 0
+    total_weeks = 0
+
+    # 모든 주차 순회
+    all_weeks = pd.to_numeric(challenge_df["주차"], errors="coerce").dropna().unique()
+
+    for week in all_weeks:
+        week = int(week)
+        total_weeks += 1
+        week_result = get_group_challenge_total(
+            challenge_df, group_df, grade, cls, group_num, week
+        )
+        total += week_result["total"]
+        if week_result["total"] >= CHALLENGE_GOAL:
+            weeks_achieved += 1
+
+    return {
+        "total": total,
+        "weeks_achieved": weeks_achieved,
+        "total_weeks": total_weeks,
+    }
+
+
+def get_my_cumulative_total(challenge_df, grade, cls, num):
+    """개인 누적 총합 반환"""
+    if challenge_df.empty:
+        return {"total": 0, "record_count": 0, "weeks_participated": 0}
+
+    my_records = challenge_df[
+        (challenge_df["학년"].astype(str) == str(grade)) &
+        (challenge_df["반"].astype(str) == str(cls)) &
+        (challenge_df["번호"].astype(str) == str(num))
+    ]
+
+    if my_records.empty:
+        return {"total": 0, "record_count": 0, "weeks_participated": 0}
+
+    total = int(pd.to_numeric(my_records["횟수"], errors="coerce").fillna(0).sum())
+    weeks = my_records["주차"].astype(str).nunique()
+
+    return {
+        "total": total,
+        "record_count": len(my_records),
+        "weeks_participated": weeks,
+    }
+
+
 # ─────────────────────────────────────────────────────
 # 데이터 입력/수정/삭제
 # ─────────────────────────────────────────────────────
@@ -1175,12 +1257,12 @@ def show_my_group(client, info):
         st.info(f"📅 챌린지는 **{CHALLENGE_START_DATE}**부터 시작됩니다. 조금만 기다려주세요!")
         return
 
-    available_weeks = get_available_weeks()
+    available_weeks = get_available_weeks(recent_only=True)
     selected_week = st.selectbox(
         "주차 선택",
         available_weeks,
-        index=len(available_weeks) - 1,
-        format_func=lambda x: f"{x}주차" + (" (이번 주 ⭐)" if x == current_week else ""),
+        index=0,  # 최신 주차가 맨 앞에 있으므로 index 0
+        format_func=lambda x: format_week_label(x, current_week),
         key="challenge_week",
     )
 
@@ -1310,6 +1392,41 @@ def show_my_group(client, info):
             st.markdown(f"{is_me}✅ **{name}**: {ms['sum']}회 *({ms['count']}건)*")
         else:
             st.markdown(f"{is_me}⏰ {name}: *아직 기록 없음*")
+
+    # ─── 🏆 누적 통계 (명예의 전당) ───
+    st.markdown("---")
+    st.markdown("### 🏆 우리 모둠 누적 기록")
+
+    cumulative = get_group_cumulative_total(
+        challenge_df, group_df, info["grade"], info["class"], group_info["번호"]
+    )
+    my_cumulative = get_my_cumulative_total(
+        challenge_df, info["grade"], info["class"], info["num"]
+    )
+
+    cum_cols = st.columns(3)
+    with cum_cols[0]:
+        st.metric(
+            "🏅 모둠 누적 총합",
+            f"{cumulative['total']:,}회",
+            help="우리 모둠이 챌린지 시작부터 지금까지 쌓은 전체 기록",
+        )
+    with cum_cols[1]:
+        if cumulative["total_weeks"] > 0:
+            achievement_rate = round(cumulative["weeks_achieved"] / cumulative["total_weeks"] * 100)
+            st.metric(
+                "🎯 주차 달성률",
+                f"{cumulative['weeks_achieved']}/{cumulative['total_weeks']}주",
+                delta=f"{achievement_rate}%",
+            )
+        else:
+            st.metric("🎯 주차 달성률", "-")
+    with cum_cols[2]:
+        st.metric(
+            "⭐ 내 누적 기록",
+            f"{my_cumulative['total']:,}회",
+            help=f"내가 {my_cumulative['weeks_participated']}주 동안 쌓은 총 기록",
+        )
 
 
 def show_record_input(client, info, records):
@@ -2057,12 +2174,12 @@ def show_admin_page(client):
             if current_week is None:
                 st.info(f"📅 챌린지는 {CHALLENGE_START_DATE}부터 시작됩니다.")
             else:
-                ch_available_weeks = get_available_weeks()
+                ch_available_weeks = get_available_weeks(recent_only=False)
                 ch_week = st.selectbox(
                     "주차 선택",
                     ch_available_weeks,
-                    index=len(ch_available_weeks) - 1,
-                    format_func=lambda x: f"{x}주차" + (" (이번 주)" if x == current_week else ""),
+                    index=0,  # 최신 주차가 맨 앞
+                    format_func=lambda x: format_week_label(x, current_week),
                     key="admin_ch_week",
                 )
 
@@ -2131,6 +2248,51 @@ def show_admin_page(client):
                     with stat_cols[2]:
                         avg_per_group = round(grand_total / total_groups, 1) if total_groups > 0 else 0
                         st.metric("모둠 평균", f"{avg_per_group}회")
+
+                # ─── 🏆 누적 랭킹 (명예의 전당) ───
+                if group_nums:
+                    st.markdown("---")
+                    st.markdown("### 🏆 누적 랭킹 (명예의 전당)")
+                    st.caption(f"챌린지 시작({CHALLENGE_START_DATE})부터 지금까지의 전체 누적")
+
+                    ranking_data = []
+                    for gnum in group_nums:
+                        g_rows = class_group_df[class_group_df["모둠번호"].astype(str) == gnum]
+                        gname = ""
+                        if not g_rows.empty:
+                            gname = str(g_rows["모둠이름"].iloc[0]).strip()
+                        if not gname:
+                            gname = f"{gnum}모둠"
+
+                        cum = get_group_cumulative_total(
+                            challenge_df, group_df, sel_grade, sel_class, gnum
+                        )
+                        ranking_data.append({
+                            "모둠명": gname,
+                            "누적 총합": cum["total"],
+                            "달성 주차": f"{cum['weeks_achieved']} / {cum['total_weeks']}",
+                            "_sort_total": cum["total"],
+                            "_sort_achieved": cum["weeks_achieved"],
+                        })
+
+                    # 누적 총합 기준 정렬
+                    ranking_data.sort(key=lambda x: (-x["_sort_total"], -x["_sort_achieved"]))
+
+                    # 메달 부여
+                    for idx, row in enumerate(ranking_data):
+                        if idx == 0:
+                            row["순위"] = "🥇 1위"
+                        elif idx == 1:
+                            row["순위"] = "🥈 2위"
+                        elif idx == 2:
+                            row["순위"] = "🥉 3위"
+                        else:
+                            row["순위"] = f"{idx + 1}위"
+
+                    ranking_df = pd.DataFrame(ranking_data)
+                    display_ranking = ranking_df[["순위", "모둠명", "누적 총합", "달성 주차"]].copy()
+                    display_ranking["누적 총합"] = display_ranking["누적 총합"].apply(lambda x: f"{x:,}회")
+                    st.dataframe(display_ranking, use_container_width=True, hide_index=True)
 
     st.markdown("---")
     with st.expander("📄 개인정보 처리방침"):
