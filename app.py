@@ -30,7 +30,7 @@ KST = timezone(timedelta(hours=9))
 
 # 오르다 100 챌린지 설정
 CHALLENGE_START_DATE = "2026-05-06"  # 챌린지 시작일 (2회차 측정일)
-CHALLENGE_GOAL = 100  # 주당 목표 점수
+CHALLENGE_GOAL = 100  # 주당 개인 목표 점수 (모둠은 평균 100점 달성 시 성공)
 CHALLENGE_MAX_COUNT = 50  # 1회 입력 최대 횟수
 CHALLENGE_MAX_PER_DAY = 3  # 같은 종목 하루 최대 입력 횟수
 CHALLENGE_RECENT_WEEKS = 12  # 드롭다운에 표시할 최근 주차 수
@@ -812,17 +812,18 @@ def get_my_today_count_by_element(challenge_df, grade, cls, num, element):
 
 
 def get_group_challenge_total(challenge_df, group_df, grade, cls, group_num, week):
-    """모둠원 전체의 특정 주차 합계 + 입력 현황 반환"""
+    """모둠원 전체의 특정 주차 합계 + 평균 + 입력 현황 반환"""
     members = get_group_members(group_df, grade, cls, group_num)
     if not members:
-        return {"total": 0, "members_status": []}
+        return {"total": 0, "average": 0, "member_count": 0, "members_status": []}
 
     members_status = []
     total = 0
+    member_count = len(members)
 
     for name in members:
         if challenge_df.empty:
-            members_status.append({"name": name, "sum": 0, "count": 0})
+            members_status.append({"name": name, "sum": 0, "count": 0, "achieved": False})
             continue
 
         match = challenge_df[
@@ -833,7 +834,7 @@ def get_group_challenge_total(challenge_df, group_df, grade, cls, group_num, wee
         ]
 
         if match.empty:
-            members_status.append({"name": name, "sum": 0, "count": 0})
+            members_status.append({"name": name, "sum": 0, "count": 0, "achieved": False})
         else:
             my_sum = pd.to_numeric(match["횟수"], errors="coerce").fillna(0).sum()
             my_sum = int(my_sum)
@@ -841,10 +842,19 @@ def get_group_challenge_total(challenge_df, group_df, grade, cls, group_num, wee
                 "name": name,
                 "sum": my_sum,
                 "count": len(match),
+                "achieved": my_sum >= CHALLENGE_GOAL,
             })
             total += my_sum
 
-    return {"total": total, "members_status": members_status}
+    # 모둠 평균 계산 (소수점 1자리)
+    average = round(total / member_count, 1) if member_count > 0 else 0
+
+    return {
+        "total": total,
+        "average": average,
+        "member_count": member_count,
+        "members_status": members_status,
+    }
 
 
 def get_group_cumulative_total(challenge_df, group_df, grade, cls, group_num):
@@ -867,7 +877,8 @@ def get_group_cumulative_total(challenge_df, group_df, grade, cls, group_num):
             challenge_df, group_df, grade, cls, group_num, week
         )
         total += week_result["total"]
-        if week_result["total"] >= CHALLENGE_GOAL:
+        # 평균 100점 기준으로 달성 판정
+        if week_result["average"] >= CHALLENGE_GOAL:
             weeks_achieved += 1
 
     return {
@@ -1506,6 +1517,15 @@ def show_challenge_help():
         )
 
         st.markdown("---")
+        st.markdown("### 🎯 목표 점수 안내")
+        st.info(
+            "**개인 목표**: 한 명이 일주일 동안 **100점 채우기**\n\n"
+            "**모둠 목표**: 모둠원 평균이 **100점 넘기기**\n\n"
+            "💡 한 친구가 100점 못 채워도, 다른 친구가 더 많이 채우면 모둠 평균이 올라가서 함께 달성할 수 있어요!\n\n"
+            "💡 매주 수요일 새 주차가 시작돼요. 그 전까지 부지런히 운동해보세요!"
+        )
+
+        st.markdown("---")
         st.markdown("### ✏️ 입력 예시")
         st.success(
             "예) 줄넘기를 50번 했어요! → **5번 = 1회**니까 → 앱에 **10회**로 입력!\n\n"
@@ -1583,28 +1603,30 @@ def show_my_group(client, info):
 
     challenge_df = get_challenge_records(client)
 
-    # 우리 모둠 진행률 (최상단)
+    # 우리 모둠 평균 진행률 (최상단)
     result = get_group_challenge_total(
         challenge_df, group_df, info["grade"], info["class"], group_info["번호"], selected_week
     )
     total = result["total"]
-    progress = min(total / CHALLENGE_GOAL, 1.0)
+    average = result["average"]
+    member_count = result["member_count"]
+    progress = min(average / CHALLENGE_GOAL, 1.0)
+
+    st.caption(f"💡 개인 목표 100점 / 모둠 평균이 100점이 되면 모둠 성공! (모둠원 {member_count}명)")
 
     col_prog1, col_prog2 = st.columns([3, 1])
     with col_prog1:
         st.progress(progress)
     with col_prog2:
-        if total >= CHALLENGE_GOAL:
-            st.markdown(f"### 🏆 {total} / {CHALLENGE_GOAL}")
+        if average >= CHALLENGE_GOAL:
+            st.markdown(f"### 🏆 평균 {average}")
         else:
-            st.markdown(f"### {total} / {CHALLENGE_GOAL}")
+            st.markdown(f"### 평균 {average} / {CHALLENGE_GOAL}")
 
-    if total >= CHALLENGE_GOAL:
-        extra = total - CHALLENGE_GOAL
-        if extra > 0:
-            st.success(f"🎉 **초과 달성!** 목표보다 {extra}회 더 해냈어요! 대단해요! 🔥")
-        else:
-            st.success("🎉 **목표 달성!** 우리 모둠 최고! 🏅")
+    st.caption(f"📊 모둠 합계: {total}회 (모둠 평균 = 합계 ÷ {member_count}명)")
+
+    if average >= CHALLENGE_GOAL:
+        st.success(f"🎉 **모둠 목표 달성!** 평균 {average}점으로 100점을 넘었어요! 🔥")
 
     # ─── 운동 기록 추가 ───
     st.markdown(f"**➕ 운동 기록 추가하기 ({selected_week}주차)**")
@@ -1700,13 +1722,31 @@ def show_my_group(client, info):
     # ─── 모둠원 입력 현황 ───
     st.markdown("---")
     st.markdown(f"**👫 우리 모둠 {selected_week}주차 입력 현황**")
+    st.caption("⭐ 표시는 개인 목표 100점 달성을 의미해요!")
+
     for ms in result["members_status"]:
         name = ms["name"]
-        is_me = "⭐ " if name == info["name"] else ""
+        is_me_marker = "(나) " if name == info["name"] else ""
+        achieved_marker = "🏆 " if ms.get("achieved") else ""
+        sum_val = ms["sum"]
+
+        # 개인 진행률 시각화
+        personal_progress = min(sum_val / CHALLENGE_GOAL, 1.0)
+        progress_bar_blocks = "█" * int(personal_progress * 10) + "░" * (10 - int(personal_progress * 10))
+
         if ms["count"] > 0:
-            st.markdown(f"{is_me}✅ **{name}**: {ms['sum']}회 *({ms['count']}건)*")
+            if ms.get("achieved"):
+                st.markdown(
+                    f"{achieved_marker}**{name}** {is_me_marker}— {sum_val}/{CHALLENGE_GOAL}점 "
+                    f"*(개인 목표 달성! 🎉)*"
+                )
+            else:
+                st.markdown(
+                    f"**{name}** {is_me_marker}— {sum_val}/{CHALLENGE_GOAL}점 "
+                    f"`{progress_bar_blocks}` *({ms['count']}건)*"
+                )
         else:
-            st.markdown(f"{is_me}⏰ {name}: *아직 기록 없음*")
+            st.markdown(f"⏰ {name} {is_me_marker}— *아직 기록 없음*")
 
     # ─── 🏆 누적 통계 (명예의 전당) ───
     st.markdown("---")
@@ -2549,22 +2589,24 @@ def show_admin_page(client):
                                     challenge_df, group_df, sel_grade, sel_class, gnum, ch_week
                                 )
                                 ch_total = result["total"]
-                                ch_progress = min(ch_total / CHALLENGE_GOAL, 1.0)
+                                ch_average = result["average"]
+                                ch_member_count = result["member_count"]
+                                ch_progress = min(ch_average / CHALLENGE_GOAL, 1.0)
                                 entered_count = sum(1 for ms in result["members_status"] if ms["count"] > 0)
+                                personal_achieved = sum(1 for ms in result["members_status"] if ms.get("achieved"))
                                 total_members = len(result["members_status"])
 
-                                if ch_total >= CHALLENGE_GOAL:
-                                    extra = ch_total - CHALLENGE_GOAL
-                                    if extra > 0:
-                                        status = f"🏆 {ch_total}/{CHALLENGE_GOAL} (+{extra})"
-                                    else:
-                                        status = f"🏆 {ch_total}/{CHALLENGE_GOAL} 달성!"
+                                if ch_average >= CHALLENGE_GOAL:
+                                    status = f"🏆 평균 {ch_average} 달성!"
                                 else:
-                                    status = f"{ch_total}/{CHALLENGE_GOAL}"
+                                    status = f"평균 {ch_average} / {CHALLENGE_GOAL}"
 
-                                st.markdown(f"**🏅 {gname}** — {status}")
+                                st.markdown(f"**🏅 {gname}** ({ch_member_count}명) — {status}")
                                 st.progress(ch_progress)
-                                st.caption(f"입력 완료: {entered_count}/{total_members}명")
+                                st.caption(
+                                    f"합계 {ch_total}회 · 입력 {entered_count}/{total_members}명 · "
+                                    f"개인 목표 달성 {personal_achieved}명 ⭐"
+                                )
                                 st.markdown("")
 
                 # 전체 통계
@@ -2574,22 +2616,29 @@ def show_admin_page(client):
                     total_groups = len(group_nums)
                     achieved_groups = 0
                     grand_total = 0
+                    total_personal_achieved = 0
+                    grand_member_count = 0
                     for gnum in group_nums:
                         result = get_group_challenge_total(
                             challenge_df, group_df, sel_grade, sel_class, gnum, ch_week
                         )
                         grand_total += result["total"]
-                        if result["total"] >= CHALLENGE_GOAL:
+                        grand_member_count += result["member_count"]
+                        total_personal_achieved += sum(1 for ms in result["members_status"] if ms.get("achieved"))
+                        # 평균 기준으로 달성 판정
+                        if result["average"] >= CHALLENGE_GOAL:
                             achieved_groups += 1
 
-                    stat_cols = st.columns(3)
+                    stat_cols = st.columns(4)
                     with stat_cols[0]:
                         st.metric("달성 모둠", f"{achieved_groups} / {total_groups}")
                     with stat_cols[1]:
-                        st.metric("학급 총합", f"{grand_total}회")
+                        st.metric("개인 목표 달성", f"{total_personal_achieved}명")
                     with stat_cols[2]:
-                        avg_per_group = round(grand_total / total_groups, 1) if total_groups > 0 else 0
-                        st.metric("모둠 평균", f"{avg_per_group}회")
+                        st.metric("학급 총합", f"{grand_total}회")
+                    with stat_cols[3]:
+                        class_avg = round(grand_total / grand_member_count, 1) if grand_member_count > 0 else 0
+                        st.metric("학급 평균(1인)", f"{class_avg}회")
 
                 # ─── 🏆 누적 랭킹 (명예의 전당) ───
                 if group_nums:
@@ -2609,16 +2658,21 @@ def show_admin_page(client):
                         cum = get_group_cumulative_total(
                             challenge_df, group_df, sel_grade, sel_class, gnum
                         )
+                        # 모둠원 수 가져오기 (공정한 1인 평균 계산용)
+                        g_member_count = len(get_group_members(group_df, sel_grade, sel_class, gnum))
+                        per_person_avg = round(cum["total"] / g_member_count, 1) if g_member_count > 0 else 0
+
                         ranking_data.append({
-                            "모둠명": gname,
+                            "모둠명": f"{gname} ({g_member_count}명)",
+                            "1인 평균": per_person_avg,
                             "누적 총합": cum["total"],
                             "달성 주차": f"{cum['weeks_achieved']} / {cum['total_weeks']}",
-                            "_sort_total": cum["total"],
+                            "_sort_avg": per_person_avg,
                             "_sort_achieved": cum["weeks_achieved"],
                         })
 
-                    # 누적 총합 기준 정렬
-                    ranking_data.sort(key=lambda x: (-x["_sort_total"], -x["_sort_achieved"]))
+                    # 1인 평균 기준 정렬 (모둠 인원수 무관 공정 비교)
+                    ranking_data.sort(key=lambda x: (-x["_sort_avg"], -x["_sort_achieved"]))
 
                     # 메달 부여
                     for idx, row in enumerate(ranking_data):
@@ -2632,8 +2686,10 @@ def show_admin_page(client):
                             row["순위"] = f"{idx + 1}위"
 
                     ranking_df = pd.DataFrame(ranking_data)
-                    display_ranking = ranking_df[["순위", "모둠명", "누적 총합", "달성 주차"]].copy()
+                    display_ranking = ranking_df[["순위", "모둠명", "1인 평균", "누적 총합", "달성 주차"]].copy()
                     display_ranking["누적 총합"] = display_ranking["누적 총합"].apply(lambda x: f"{x:,}회")
+                    display_ranking["1인 평균"] = display_ranking["1인 평균"].apply(lambda x: f"{x}회")
+                    st.caption("⚖️ 모둠원 수가 달라도 공정하게 비교할 수 있도록 **1인 평균** 기준으로 순위를 매겨요.")
                     st.dataframe(display_ranking, use_container_width=True, hide_index=True)
 
     st.markdown("---")
