@@ -29,7 +29,7 @@ SHEET_CHALLENGE = "챌린지기록"
 KST = timezone(timedelta(hours=9))
 
 # 오르다 100 챌린지 설정
-CHALLENGE_START_DATE = "2026-04-28"  # 챌린지 시작일 (2회차 측정일)
+CHALLENGE_START_DATE = "2026-05-06"  # 챌린지 시작일 (2회차 측정일)
 CHALLENGE_GOAL = 100  # 주당 목표 점수
 CHALLENGE_MAX_COUNT = 50  # 1회 입력 최대 횟수
 CHALLENGE_MAX_PER_DAY = 3  # 같은 종목 하루 최대 입력 횟수
@@ -37,10 +37,171 @@ CHALLENGE_RECENT_WEEKS = 12  # 드롭다운에 표시할 최근 주차 수
 
 # 챌린지 체력 요소 (라벨, 이모지, 예시 운동)
 CHALLENGE_ELEMENTS = [
-    ("심폐지구력", "🏃", "버피 · 줄넘기(5회)"),
-    ("근지구력", "💪", "플랭크(5초) · 스쿼트 · 니푸시업"),
+    ("심폐지구력", "🏃", "버피 · 줄넘기"),
+    ("근지구력", "💪", "플랭크 · 스쿼트 · 니푸시업"),
     ("순발력", "⚡", "라인터치 · 사이드스텝"),
-    ("유연성", "🧘", "스트레칭(10초) · 앉아 굽히기(10초)"),
+    ("유연성", "🧘", "스트레칭 · 앉아 굽히기"),
+]
+
+# 체력 요소별 설명 (도움말용)
+CHALLENGE_ELEMENT_DESC = {
+    "심폐지구력": "심장과 폐가 오랫동안 운동을 견디는 힘이에요. 오래 달리거나 활동할 때 숨이 덜 차게 해주는 능력이지요!",
+    "근지구력": "근육이 오랫동안 힘을 낼 수 있는 능력이에요. 무거운 것을 오래 들거나 같은 자세를 오래 유지할 때 쓰여요!",
+    "순발력": "짧은 시간에 빠르게 움직이는 힘이에요. 운동 경기에서 갑자기 방향을 바꾸거나 빠르게 출발할 때 필요해요!",
+    "유연성": "몸을 부드럽게 움직일 수 있는 능력이에요. 다치지 않게 도와주고, 운동을 더 잘하게 해줘요!",
+}
+
+# 운동별 상세 안내 (이름, 체력요소, 카운트 기준, 설명, SVG)
+EXERCISE_GUIDE = [
+    {
+        "name": "버피",
+        "element": "심폐지구력",
+        "rule": "1번 = 1회",
+        "desc": "쪼그려 앉기 → 다리 뒤로 뻗기 → 다시 앉기 → 점프하며 일어서기",
+        "color": "#FF6B6B",
+        "svg": '''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="50" cy="20" r="8" fill="#FF6B6B"/>
+            <line x1="50" y1="28" x2="50" y2="55" stroke="#FF6B6B" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="35" x2="30" y2="20" stroke="#FF6B6B" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="35" x2="70" y2="20" stroke="#FF6B6B" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="55" x2="35" y2="80" stroke="#FF6B6B" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="55" x2="65" y2="80" stroke="#FF6B6B" stroke-width="4" stroke-linecap="round"/>
+        </svg>''',
+    },
+    {
+        "name": "줄넘기",
+        "element": "심폐지구력",
+        "rule": "5번 = 1회",
+        "desc": "양발을 모아 줄을 넘기 (또는 번갈아 뛰기)",
+        "color": "#FF6B6B",
+        "svg": '''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="50" cy="25" r="7" fill="#FF6B6B"/>
+            <line x1="50" y1="32" x2="50" y2="65" stroke="#FF6B6B" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="40" x2="32" y2="48" stroke="#FF6B6B" stroke-width="3" stroke-linecap="round"/>
+            <line x1="50" y1="40" x2="68" y2="48" stroke="#FF6B6B" stroke-width="3" stroke-linecap="round"/>
+            <line x1="50" y1="65" x2="42" y2="80" stroke="#FF6B6B" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="65" x2="58" y2="80" stroke="#FF6B6B" stroke-width="4" stroke-linecap="round"/>
+            <path d="M 32 48 Q 18 28 28 12" stroke="#888" stroke-width="2" fill="none"/>
+            <path d="M 68 48 Q 82 28 72 12" stroke="#888" stroke-width="2" fill="none"/>
+            <path d="M 28 12 Q 50 4 72 12" stroke="#888" stroke-width="2" fill="none"/>
+        </svg>''',
+    },
+    {
+        "name": "플랭크",
+        "element": "근지구력",
+        "rule": "5초 버티기 = 1회",
+        "desc": "팔꿈치를 바닥에 대고 몸을 일자로 유지하기",
+        "color": "#45B7D1",
+        "svg": '''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <line x1="20" y1="60" x2="85" y2="55" stroke="#45B7D1" stroke-width="5" stroke-linecap="round"/>
+            <circle cx="85" cy="52" r="6" fill="#45B7D1"/>
+            <line x1="25" y1="60" x2="20" y2="80" stroke="#45B7D1" stroke-width="4" stroke-linecap="round"/>
+            <line x1="75" y1="58" x2="80" y2="78" stroke="#45B7D1" stroke-width="4" stroke-linecap="round"/>
+            <line x1="20" y1="80" x2="22" y2="80" stroke="#45B7D1" stroke-width="6" stroke-linecap="round"/>
+            <line x1="78" y1="78" x2="82" y2="78" stroke="#45B7D1" stroke-width="6" stroke-linecap="round"/>
+            <line x1="60" y1="85" x2="75" y2="85" stroke="#45B7D1" stroke-width="5" stroke-linecap="round"/>
+        </svg>''',
+    },
+    {
+        "name": "스쿼트",
+        "element": "근지구력",
+        "rule": "1번 = 1회",
+        "desc": "어깨너비로 서서 무릎과 엉덩이를 낮춰 앉았다 일어서기",
+        "color": "#45B7D1",
+        "svg": '''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="50" cy="22" r="8" fill="#45B7D1"/>
+            <line x1="50" y1="30" x2="50" y2="55" stroke="#45B7D1" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="38" x2="32" y2="55" stroke="#45B7D1" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="38" x2="68" y2="55" stroke="#45B7D1" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="55" x2="32" y2="70" stroke="#45B7D1" stroke-width="4" stroke-linecap="round"/>
+            <line x1="32" y1="70" x2="32" y2="85" stroke="#45B7D1" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="55" x2="68" y2="70" stroke="#45B7D1" stroke-width="4" stroke-linecap="round"/>
+            <line x1="68" y1="70" x2="68" y2="85" stroke="#45B7D1" stroke-width="4" stroke-linecap="round"/>
+        </svg>''',
+    },
+    {
+        "name": "니푸시업",
+        "element": "근지구력",
+        "rule": "1번 = 1회",
+        "desc": "무릎을 바닥에 대고 팔굽혀펴기 (어려우면 플랭크로 대체)",
+        "color": "#45B7D1",
+        "svg": '''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <line x1="20" y1="55" x2="80" y2="65" stroke="#45B7D1" stroke-width="5" stroke-linecap="round"/>
+            <circle cx="20" cy="52" r="6" fill="#45B7D1"/>
+            <line x1="28" y1="55" x2="32" y2="78" stroke="#45B7D1" stroke-width="4" stroke-linecap="round"/>
+            <line x1="32" y1="78" x2="30" y2="80" stroke="#45B7D1" stroke-width="6" stroke-linecap="round"/>
+            <line x1="60" y1="62" x2="70" y2="78" stroke="#45B7D1" stroke-width="4" stroke-linecap="round"/>
+            <line x1="68" y1="78" x2="78" y2="78" stroke="#45B7D1" stroke-width="6" stroke-linecap="round"/>
+            <line x1="78" y1="65" x2="80" y2="85" stroke="#45B7D1" stroke-width="5" stroke-linecap="round"/>
+        </svg>''',
+    },
+    {
+        "name": "라인터치",
+        "element": "순발력",
+        "rule": "1번 왕복 = 1회",
+        "desc": "3m 라인을 사이드스텝으로 왕복하며 양쪽 라인 손으로 터치",
+        "color": "#4ECDC4",
+        "svg": '''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <line x1="15" y1="85" x2="15" y2="95" stroke="#888" stroke-width="2"/>
+            <line x1="85" y1="85" x2="85" y2="95" stroke="#888" stroke-width="2"/>
+            <line x1="10" y1="90" x2="90" y2="90" stroke="#888" stroke-width="1" stroke-dasharray="3"/>
+            <circle cx="50" cy="25" r="8" fill="#4ECDC4"/>
+            <line x1="50" y1="33" x2="50" y2="60" stroke="#4ECDC4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="40" x2="30" y2="50" stroke="#4ECDC4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="40" x2="70" y2="50" stroke="#4ECDC4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="60" x2="38" y2="80" stroke="#4ECDC4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="60" x2="62" y2="80" stroke="#4ECDC4" stroke-width="4" stroke-linecap="round"/>
+            <path d="M 22 30 L 30 35 L 22 40" stroke="#4ECDC4" stroke-width="2" fill="none"/>
+            <path d="M 78 30 L 70 35 L 78 40" stroke="#4ECDC4" stroke-width="2" fill="none"/>
+        </svg>''',
+    },
+    {
+        "name": "사이드스텝",
+        "element": "순발력",
+        "rule": "1번 왕복 = 1회",
+        "desc": "양옆으로 빠르게 움직이며 발을 모았다 벌렸다 반복",
+        "color": "#4ECDC4",
+        "svg": '''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="50" cy="22" r="8" fill="#4ECDC4"/>
+            <line x1="50" y1="30" x2="50" y2="60" stroke="#4ECDC4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="38" x2="28" y2="42" stroke="#4ECDC4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="38" x2="72" y2="42" stroke="#4ECDC4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="60" x2="32" y2="82" stroke="#4ECDC4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="60" x2="68" y2="82" stroke="#4ECDC4" stroke-width="4" stroke-linecap="round"/>
+            <path d="M 18 70 L 10 70 L 14 65 M 10 70 L 14 75" stroke="#4ECDC4" stroke-width="2" fill="none"/>
+            <path d="M 82 70 L 90 70 L 86 65 M 90 70 L 86 75" stroke="#4ECDC4" stroke-width="2" fill="none"/>
+        </svg>''',
+    },
+    {
+        "name": "스트레칭",
+        "element": "유연성",
+        "rule": "10초 유지 = 1회",
+        "desc": "팔, 다리, 허리 등 원하는 부위를 천천히 늘려 10초 유지",
+        "color": "#96CEB4",
+        "svg": '''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="50" cy="22" r="8" fill="#96CEB4"/>
+            <line x1="50" y1="30" x2="50" y2="62" stroke="#96CEB4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="35" x2="25" y2="20" stroke="#96CEB4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="35" x2="75" y2="20" stroke="#96CEB4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="62" x2="38" y2="85" stroke="#96CEB4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="50" y1="62" x2="62" y2="85" stroke="#96CEB4" stroke-width="4" stroke-linecap="round"/>
+        </svg>''',
+    },
+    {
+        "name": "앉아 굽히기",
+        "element": "유연성",
+        "rule": "10초 유지 = 1회",
+        "desc": "다리 펴고 앉아 상체를 천천히 앞으로 굽혀 10초 유지",
+        "color": "#96CEB4",
+        "svg": '''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <line x1="20" y1="80" x2="85" y2="80" stroke="#96CEB4" stroke-width="5" stroke-linecap="round"/>
+            <circle cx="78" cy="68" r="7" fill="#96CEB4"/>
+            <line x1="20" y1="65" x2="78" y2="68" stroke="#96CEB4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="40" y1="65" x2="35" y2="78" stroke="#96CEB4" stroke-width="4" stroke-linecap="round"/>
+            <line x1="60" y1="65" x2="62" y2="78" stroke="#96CEB4" stroke-width="4" stroke-linecap="round"/>
+            <path d="M 30 60 Q 25 55 28 50" stroke="#888" stroke-width="2" fill="none" stroke-dasharray="2"/>
+        </svg>''',
+    },
 ]
 
 ITEMS = [
@@ -1201,6 +1362,72 @@ def show_student_dashboard(client):
         show_my_group(client, info)
 
 
+def show_challenge_help():
+    """챌린지 운동 도움말 (아코디언 형태)"""
+    with st.expander("❓ 운동 도움말 보기 (점수 기준 · 동작 안내)", expanded=False):
+        st.markdown("**🎯 어떤 운동을 어떻게 해야 하나요?**")
+        st.caption("운동을 한 만큼 표를 보고 횟수로 바꿔서 입력하면 돼요!")
+
+        # 체력 요소별로 묶어서 표시
+        for element_label, emoji, _ in CHALLENGE_ELEMENTS:
+            st.markdown("---")
+            st.markdown(f"### {emoji} {element_label}")
+
+            # 체력 요소 설명
+            desc = CHALLENGE_ELEMENT_DESC.get(element_label, "")
+            if desc:
+                st.info(f"💡 {desc}")
+
+            # 해당 요소의 운동 카드들
+            exercises = [ex for ex in EXERCISE_GUIDE if ex["element"] == element_label]
+            if not exercises:
+                continue
+
+            ex_cols = st.columns(len(exercises))
+            for i, ex in enumerate(exercises):
+                with ex_cols[i]:
+                    # 운동 그림 + 정보 카드 (HTML)
+                    card_html = f"""
+                    <div style="background: #f8f9fa; padding: 12px; border-radius: 8px; text-align: center; height: 100%;">
+                        <div style="margin: 0 auto 8px auto; width: 80px; height: 80px;">
+                            {ex['svg']}
+                        </div>
+                        <div style="font-size: 15px; font-weight: bold; color: #31333F; margin-bottom: 6px;">
+                            {ex['name']}
+                        </div>
+                        <div style="background: {ex['color']}22; color: {ex['color']}; padding: 4px 10px; border-radius: 4px; font-size: 13px; font-weight: bold; display: inline-block; margin-bottom: 8px;">
+                            {ex['rule']}
+                        </div>
+                        <div style="font-size: 12px; color: #666; line-height: 1.4;">
+                            {ex['desc']}
+                        </div>
+                    </div>
+                    """
+                    components.html(card_html, height=260)
+
+        st.markdown("---")
+        st.markdown("### 💪 체력 요소별 똑똑하게 운동하는 법")
+        st.markdown(
+            """
+            우리 모둠 평균 체력 카드를 보면 **잘하는 종목**과 **부족한 종목**을 알 수 있어요!
+
+            - 🏃 **3분왕복달리기 점수가 낮다면** → 심폐지구력 운동(버피·줄넘기)을 더 많이 해보세요
+            - 💪 **플랭크 시간이 짧다면** → 근지구력 운동(플랭크·스쿼트·니푸시업)을 더 많이 해보세요
+            - ⚡ **사이드스텝 점수가 낮다면** → 순발력 운동(라인터치·사이드스텝)을 더 많이 해보세요
+            - 🧘 **윗몸앞으로굽히기 점수가 낮다면** → 유연성 운동(스트레칭·앉아 굽히기)을 더 많이 해보세요
+
+            **부족한 종목에 집중**해서 운동하면 다음 측정 때 점수가 쑥쑥 올라가요! 🎉
+            """
+        )
+
+        st.markdown("---")
+        st.markdown("### ✏️ 입력 예시")
+        st.success(
+            "예) 줄넘기를 50번 했어요! → **5번 = 1회**니까 → 앱에 **10회**로 입력!\n\n"
+            "예) 플랭크를 30초 버텼어요! → **5초 = 1회**니까 → 앱에 **6회**로 입력!"
+        )
+
+
 def show_my_group(client, info):
     st.markdown("#### 👥 내 모둠")
 
@@ -1250,6 +1477,9 @@ def show_my_group(client, info):
     # ─── 🎯 오르다 100 챌린지 ───
     st.markdown("---")
     st.markdown("### 🎯 오르다 100 챌린지")
+
+    # 운동 도움말 (아코디언)
+    show_challenge_help()
 
     current_week = get_current_week()
 
