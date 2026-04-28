@@ -1189,7 +1189,12 @@ def generate_gemini_feedback(records_df, item_name, student_name):
         return "⚠️ google-generativeai 패키지가 설치되지 않았습니다."
 
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    # 사용 가능한 모델 우선순위 (앞에서부터 시도)
+    GEMINI_MODELS = [
+        "gemini-2.5-flash",       # 1순위: 최신 안정 모델
+        "gemini-2.0-flash",       # 2순위: 안정적
+        "gemini-flash-latest",    # 3순위: 별칭 (최신 자동 매핑)
+    ]
 
     df = records_df[["측정회차", item_name]].dropna().copy()
     df["_round_num"] = pd.to_numeric(df["측정회차"], errors="coerce")
@@ -1217,11 +1222,23 @@ def generate_gemini_feedback(records_df, item_name, student_name):
     너무 길지 않게 3~4문장 내외로 작성해주세요.
     """
 
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"⚠️ AI 분석 중 일시적인 오류가 발생했습니다. 나중에 다시 시도해주세요. ({e})"
+    # 최초 선택된 모델로 호출 시도 → 실패 시 다음 모델로 자동 fallback
+    last_error = None
+    for model_name in GEMINI_MODELS:
+        try:
+            current_model = genai.GenerativeModel(model_name)
+            response = current_model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            last_error = e
+            err_msg = str(e)
+            # 모델 이름 문제(404)인 경우 다음 모델 시도
+            if "404" in err_msg or "not found" in err_msg.lower():
+                continue
+            # 다른 오류는 즉시 중단
+            return f"⚠️ AI 분석 중 일시적인 오류가 발생했습니다. 나중에 다시 시도해주세요. ({e})"
+
+    return f"⚠️ AI 분석 모델 호출 실패: {last_error}"
 
 
 def create_growth_chart(records_df, item_name):
