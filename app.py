@@ -905,25 +905,93 @@ def get_my_cumulative_total(challenge_df, grade, cls, num):
 # 데이터 입력/수정/삭제
 # ─────────────────────────────────────────────────────
 def add_record(client, record):
+    """
+    체력기록 저장. 같은 학생의 같은 회차 기록이 이미 있으면:
+    - 새로 입력된 종목은 덮어쓰기
+    - 비어있는 종목(미입력)은 기존 값 유지
+    없으면 새 행으로 추가.
+    """
     ws = get_worksheet(client, SHEET_RECORDS)
     if ws is None:
         return False, "체력기록 시트에 접근할 수 없습니다."
 
-    grade, cls, num, _, round_num = record[:5]
-    values = record[6:]
+    grade, cls, num, name, round_num = record[:5]
+    measure_date = record[5]
+    new_values = record[6:]  # [v1, v2, v3, v4]
 
-    if all(v in ("", None) for v in values):
+    if all(v in ("", None) for v in new_values):
         return False, "적어도 한 종목 이상 입력해주세요."
 
-    existing = get_student_records(client, grade, cls, num)
-    if not existing.empty:
-        duplicate = existing[existing["측정회차"].astype(str) == str(round_num)]
-        if not duplicate.empty:
-            return False, f"{round_num}회차 기록이 이미 존재합니다."
+    # 기존 행 찾기 (같은 학생 + 같은 회차)
+    all_data = gs_retry(lambda: ws.get_all_values())
+    target_row = None
+    existing_values = ["", "", "", ""]
 
-    gs_retry(lambda: ws.append_row(record))
-    clear_data_caches()
-    return True, f"{round_num}회차 기록이 저장되었습니다."
+    for i, row in enumerate(all_data):
+        if i == 0:
+            continue
+        if (len(row) >= 5
+                and str(row[0]) == str(grade)
+                and str(row[1]) == str(cls)
+                and str(row[2]) == str(num)
+                and str(row[4]) == str(round_num)):
+            target_row = i + 1
+            # 기존 종목 값 4개 (열 7~10, index 6~9)
+            for j in range(4):
+                if len(row) > 6 + j:
+                    existing_values[j] = row[6 + j]
+            break
+
+    if target_row is not None:
+        # 기존 행 업데이트: 새 값이 있으면 덮어쓰기, 없으면 기존값 유지
+        merged_values = []
+        overwritten = []  # 덮어쓴 종목 라벨 (안내 메시지용)
+        added = []  # 새로 추가한 종목 라벨
+
+        for j, item_label in enumerate(ITEMS):
+            new_v = new_values[j]
+            old_v = existing_values[j]
+
+            if new_v not in ("", None):
+                # 새 값이 들어옴
+                merged_values.append(new_v)
+                if old_v not in ("", None):
+                    overwritten.append(item_label.split("(")[0])
+                else:
+                    added.append(item_label.split("(")[0])
+            else:
+                # 새 값이 없으면 기존값 유지
+                merged_values.append(old_v)
+
+        # 측정일은 항상 최신으로 갱신 (학생이 다른 날짜 선택 가능)
+        full_row = [
+            str(grade), str(cls), str(num), name, str(round_num), measure_date,
+            *merged_values
+        ]
+
+        # 한 번에 행 전체 업데이트 (A열~J열 = 10개)
+        gs_retry(lambda: ws.update(
+            range_name=f"A{target_row}:J{target_row}",
+            values=[full_row]
+        ))
+        clear_data_caches()
+
+        # 안내 메시지 조립
+        msg_parts = []
+        if added:
+            msg_parts.append(f"신규 저장: {', '.join(added)}")
+        if overwritten:
+            msg_parts.append(f"덮어쓰기: {', '.join(overwritten)}")
+        msg = " · ".join(msg_parts) if msg_parts else "기록 업데이트"
+        return True, f"{round_num}회차 {msg} 완료!"
+    else:
+        # 새 행 추가
+        gs_retry(lambda: ws.append_row(record))
+        clear_data_caches()
+        saved_items = [
+            ITEMS[j].split("(")[0] for j in range(4) if new_values[j] not in ("", None)
+        ]
+        return True, f"{round_num}회차 기록 저장 완료! ({', '.join(saved_items)})"
 
 
 def add_challenge_record(client, grade, cls, num, name, week, element, count):
@@ -1767,20 +1835,47 @@ def show_record_input(client, info, records):
 
     today_str = now_kst().strftime("%Y-%m-%d")
 
-    already_saved_today = False
+    # 오늘 이미 저장된 기록 찾기 (있으면 부분 입력으로 추가/수정)
+    today_record = None
     if not records.empty and "측정일" in records.columns:
-        if today_str in records["측정일"].values:
-            already_saved_today = True
+        today_rows = records[records["측정일"] == today_str]
+        if not today_rows.empty:
+            today_record = today_rows.iloc[0]
 
-    if already_saved_today:
-        st.warning("🚨 오늘의 체력 기록을 이미 저장했습니다! 대단해요! 👍\n\n(잘못 입력하여 수정이 필요하다면 선생님께 말씀해주세요.)")
-        return
-
-    if records.empty:
-        next_round = 1
+    # 회차 결정
+    if today_record is not None:
+        # 오늘 기록이 이미 있으면 그 회차를 그대로 사용 (이어서 입력)
+        round_num_value = int(pd.to_numeric(today_record["측정회차"], errors="coerce") or 1)
+    elif records.empty:
+        round_num_value = 1
     else:
         existing_rounds = pd.to_numeric(records["측정회차"], errors="coerce").dropna()
-        next_round = int(existing_rounds.max()) + 1 if not existing_rounds.empty else 1
+        round_num_value = int(existing_rounds.max()) + 1 if not existing_rounds.empty else 1
+
+    # ─── 오늘의 입력 현황 카드 ───
+    if today_record is not None:
+        st.markdown("##### 📋 오늘의 입력 현황")
+        status_cols = st.columns(4)
+        for i, item in enumerate(ITEMS):
+            with status_cols[i]:
+                short_name = item.split("(")[0]
+                unit = item.split("(")[1].replace(")", "")
+                label = ITEM_LABELS[item]
+                v = today_record.get(item, "")
+                v_str = str(v).strip() if v is not None else ""
+                if v_str and v_str.lower() != "nan":
+                    try:
+                        # 정수면 정수로, 아니면 그대로
+                        v_num = float(v_str)
+                        v_display = str(int(v_num)) if v_num.is_integer() else str(v_num)
+                    except Exception:
+                        v_display = v_str
+                    st.success(f"✅ {label}\n\n**{v_display} {unit}**")
+                else:
+                    st.info(f"⏳ {label}\n\n*아직 미입력*")
+
+        st.caption("💡 비어있는 종목만 입력하거나, 기존 기록을 새로 입력해도 돼요 (덮어쓰기).")
+        st.markdown("---")
 
     with st.form("student_record_form"):
         col_round, col_date = st.columns(2)
@@ -1788,9 +1883,9 @@ def show_record_input(client, info, records):
             round_num = st.number_input(
                 "측정 회차",
                 min_value=1,
-                value=next_round,
+                value=round_num_value,
                 disabled=True,
-                help="학생 계정에서는 다음 회차만 자동으로 입력됩니다.",
+                help="오늘 이미 입력한 기록이 있으면 같은 회차에 이어서 저장됩니다.",
             )
         with col_date:
             measure_date = st.date_input("측정일", value=now_kst().date())
@@ -1803,7 +1898,7 @@ def show_record_input(client, info, records):
             v1_raw = st.text_input(
                 "3분 왕복달리기 (회)",
                 value="",
-                placeholder="미입력",
+                placeholder="미입력 (입력칸 비워두면 기존값 유지)",
                 key="sv1",
                 help="전원 동시, 2인 1조",
             )
@@ -1811,7 +1906,7 @@ def show_record_input(client, info, records):
             v3_raw = st.text_input(
                 "플랭크 (초, 최대 180초)",
                 value="",
-                placeholder="미입력",
+                placeholder="미입력 (입력칸 비워두면 기존값 유지)",
                 key="sv3",
                 help="2인 1조 관찰",
             )
@@ -1820,14 +1915,14 @@ def show_record_input(client, info, records):
             v2_raw = st.text_input(
                 "사이드스텝 (회/20초)",
                 value="",
-                placeholder="미입력",
+                placeholder="미입력 (입력칸 비워두면 기존값 유지)",
                 key="sv2",
             )
             st.markdown("##### 🧘 유연성")
             v4_raw = st.text_input(
                 "윗몸앞으로굽히기 (cm)",
                 value="",
-                placeholder="미입력",
+                placeholder="미입력 (입력칸 비워두면 기존값 유지)",
                 key="sv4",
                 help="0.5 단위 입력 가능",
             )
