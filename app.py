@@ -29,7 +29,7 @@ SHEET_CHALLENGE = "챌린지기록"
 KST = timezone(timedelta(hours=9))
 
 # 오르다 100 챌린지 설정
-CHALLENGE_START_DATE = "2026-04-28"  # 챌린지 시작일 (2회차 측정일)
+CHALLENGE_START_DATE = "2026-04-29"  # 챌린지 시작일 (2회차 측정일)
 CHALLENGE_GOAL = 100  # 주당 개인 목표 점수 (모둠은 평균 100점 달성 시 성공)
 CHALLENGE_MAX_COUNT = 50  # 1회 입력 최대 횟수
 CHALLENGE_MAX_PER_DAY = 3  # 같은 종목 하루 최대 입력 횟수
